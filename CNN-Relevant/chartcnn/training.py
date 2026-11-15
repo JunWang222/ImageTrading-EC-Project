@@ -1,4 +1,5 @@
 """Training loop, early stopping, resume, and the one-call experiment runner."""
+import contextlib
 import time
 from pathlib import Path
 
@@ -8,30 +9,43 @@ import torch
 from torch import nn
 
 from .baselines import fit_baselines
-from .data import ChartDataset, Store, build_split
+from .data import Store, build_split, make_dataset
 from .evaluation import comparison_table, decile_report, metrics
 from .models import build_model, print_parameter_count
 from .utils import make_loader, mirror, save_json, seed_all
 
 
+def autocast(device, amp):
+    """bfloat16 autocast on GPUs that support it natively (Ampere or newer: A100, L4, H100).
+    Off on CPU and on older GPUs such as the T4, where only float16 would be available and would
+    need loss scaling. Weights and the optimizer stay in float32."""
+    device = torch.device(device)
+    if amp and device.type == "cuda" and torch.cuda.get_device_capability(device)[0] >= 8:
+        return torch.autocast("cuda", dtype=torch.bfloat16)
+    return contextlib.nullcontext()
+
+
 @torch.no_grad()
-def predict(model, loader, device):
+def predict(model, loader, device, amp=False):
     """P(label = 1) for every sample, in dataset order."""
     model.eval()
     out = np.empty(len(loader.dataset))
     for x, _, idx in loader:
-        out[idx.numpy()] = model(x.to(device, non_blocking=True)).float().softmax(1)[:, 1].cpu().numpy()
+        with autocast(device, amp):
+            logits = model(x.to(device, non_blocking=True))
+        out[idx.numpy()] = logits.float().softmax(1)[:, 1].cpu().numpy()
     return out
 
 
-def train_one_epoch(model, loader, optimizer, device, log_every):
+def train_one_epoch(model, loader, optimizer, device, log_every, amp=False):
     model.train()
     seen = loss_sum = correct = 0
     start = time.perf_counter()
     for b, (x, y, _) in enumerate(loader, 1):
         x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
-        logits = model(x)
-        loss = nn.functional.cross_entropy(logits, y)
+        with autocast(device, amp):
+            logits = model(x)
+        loss = nn.functional.cross_entropy(logits.float(), y)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
@@ -60,8 +74,9 @@ def fit(model, train_loader, valid_loader, y_valid, prior, settings, device, out
     for epoch in range(first, settings["epochs"] + 1):
         train_loader.generator.manual_seed(settings["seed"] + epoch)
         row = dict(epoch=epoch, **train_one_epoch(model, train_loader, optimizer, device,
-                                                  max(1, len(train_loader) // 5)))
-        p = predict(model, valid_loader, device)
+                                                  max(1, len(train_loader) // 5),
+                                                  settings.get("amp", False)))
+        p = predict(model, valid_loader, device, settings.get("amp", False))
         row.update({"val_" + k: v for k, v in metrics(y_valid, p, prior).items()})
         history.append(row)
         print(f"epoch {epoch}: train_loss {row['train_loss']:.4f} | val AUC {row['val_roc_auc']:.4f} "
@@ -107,10 +122,10 @@ def run_experiment(prepared, exp, settings, device, out_dir, drive_dir=None, smo
                                      max_train=2_000 if smoke else 300_000)
 
     model = build_model(settings).to(device)
-    print_parameter_count(model, f"ChartCNN ({settings.get('arch', 'plain')})")
+    print_parameter_count(model, f"model ({settings.get('arch', 'plain')})")
     w = settings["num_workers"]
-    train_loader = make_loader(ChartDataset(prepared, train), settings["batch_size"], w, True, settings["seed"])
-    valid_loader = make_loader(ChartDataset(prepared, valid), settings["eval_batch_size"], w, False)
+    train_loader = make_loader(make_dataset(prepared, train, settings.get("arch", "plain")), settings["batch_size"], w, True, settings["seed"])
+    valid_loader = make_loader(make_dataset(prepared, valid, settings.get("arch", "plain")), settings["eval_batch_size"], w, False)
     history = fit(model, train_loader, valid_loader, valid.label.to_numpy(), prior, settings, device,
                   out_dir, drive_dir)
 
@@ -136,8 +151,8 @@ def evaluate_test(prepared, exp, settings, device, out_dir, median, prior, drive
         test = test.reset_index(drop=True)
     model = build_model(settings).to(device)
     model.load_state_dict(torch.load(Path(out_dir) / "best.pt", map_location=device, weights_only=False)["model"])
-    p = predict(model, make_loader(ChartDataset(prepared, test), settings["eval_batch_size"],
-                                   settings["num_workers"], False), device)
+    p = predict(model, make_loader(make_dataset(prepared, test, settings.get("arch", "plain")), settings["eval_batch_size"],
+                                   settings["num_workers"], False), device, settings.get("amp", False))
     result = dict(experiment=exp, test=metrics(test.label.to_numpy(), p, prior),
                   long_short=decile_report(test, p, exp["target"])[1])
     save_json(Path(out_dir) / "test_summary.json", result, drive_dir)
