@@ -95,8 +95,8 @@ def prepare(config):
     if manifest.get('status')!='complete' or manifest.get('method')!='crsp_cash_dividend_chart_and_share_volume_v1':
         raise ValueError('Expected complete verified dividend-adjusted demo')
     entries=sorted(manifest['completed'].items())
-    if not entries or entries[0][0]<'2023-01-01' or entries[-1][0]>'2023-06-30':
-        raise ValueError('Extend the session-calendar adapter before using another period')
+    if not entries:
+        raise ValueError('Empty source manifest')
     if len(entries)!=manifest['days']:
         raise ValueError('Source manifest day count mismatch')
     # Check the raw trading calendar so a missing whole session cannot be bridged.
@@ -116,17 +116,21 @@ def prepare(config):
     valid=np.lib.format.open_memmap(out/'valid.npy',mode='w+',dtype='bool',shape=(n,t))
     scales=np.lib.format.open_memmap(out/'multipliers.npy',mode='w+',dtype='float64',shape=(n,t,2))
     features[:]=np.nan;valid[:]=False;scales[:]=np.nan
-    clock=[]
+    clock=[];early_close=[]
+    raw_days=raw_manifest.get('completed',{})
     for number,(day,item) in enumerate(entries):
+        # Early-close sessions (210 minutes) keep their 78 grid slots but every slot is invalid,
+        # so no window's input or horizon touches them (DECISIONS: dropped when building examples).
+        session=int(raw_days.get(day,{}).get('session_minutes',390))//config['bar_minutes']
         frame=pd.read_parquet(root/item['file'])
         if frame.duplicated(['permno','bar_start']).any() or not frame.date.eq(day).all():
             raise ValueError('Duplicate bar key or inconsistent date')
         starts=pd.DatetimeIndex(frame.bar_start)
         origin=pd.Timestamp(day+' 09:30',tz='America/New_York')
         offsets=np.asarray((starts-origin)/pd.Timedelta(minutes=5))
-        if not (np.isfinite(offsets)&(offsets==np.floor(offsets))&(offsets>=0)&(offsets<78)).all():
+        if not (np.isfinite(offsets)&(offsets==np.floor(offsets))&(offsets>=0)&(offsets<session)).all():
             raise ValueError('Unexpected source session grid')
-        if not (frame.groupby('permno').size()==78).all():
+        if not (frame.groupby('permno').size()==session).all():
             raise ValueError('Source does not preserve every expected five-minute slot')
         si=frame.permno.map(lookup).to_numpy(dtype=np.int32);ti=offsets.astype(np.int32)
         x=frame[FEATURES].to_numpy(dtype=float)
@@ -138,11 +142,14 @@ def prepare(config):
         daily=np.full((n,78,5),np.nan);ok=np.zeros((n,78),dtype=bool)
         daily_mult=np.full((n,78,2),np.nan)
         daily[si,ti]=x;ok[si,ti]=good;daily_mult[si,ti]=mult
+        if session!=slots:
+            ok[:]=False;early_close.append(day)
         sl=slice(number*slots,(number+1)*slots)
         features[:,sl]=daily;valid[:,sl]=ok;scales[:,sl]=daily_mult
         clock.extend(pd.date_range(origin,periods=slots,freq=f'{config["bar_minutes"]}min')
                      +pd.Timedelta(minutes=config['bar_minutes']))
     features.flush();valid.flush();scales.flush()
+    config=dict(config,early_close_sessions_excluded=early_close)
     return write_samples(config,out,features,valid,clock,ids)
 
 
@@ -189,7 +196,7 @@ def write_samples(config,out,features,valid,clock,ids,source_sha=None):
     zero_rule=('zero returns excluded' if config.get('drop_zero_returns',True)
                else 'zero returns kept (label 0); direction targets drop them at label time')
     metadata={'status':'complete','config':config,'source_manifest_sha256':source_sha,
-        'shape':[n,t,5],'permnos':ids,'features':FEATURES,'decision_clock_ns':pd.DatetimeIndex(clock).asi8.tolist(),
+        'shape':[n,t,5],'permnos':ids,'features':FEATURES,'decision_clock_ns':pd.DatetimeIndex(clock).as_unit('ns').asi8.tolist(),
         'screening':screening,'splits':summary,'label_definition':'1 if adjusted_close[t+H]/adjusted_close[t]-1 > 0, else 0; '+zero_rule,
         'label_interpretation':'Dividend-adjusted chart-price return, not exact reinvested total return',
         'price_basis':'features.npy holds end-of-data-basis prices (raw * multipliers.npy). Model inputs divide each window by its last bar\'s multipliers (point in time: anchor = last input bar); never use stored levels directly.',

@@ -22,7 +22,7 @@ def validate(root):
         path=root/entry['file'];source_path=raw/source['completed'][day]['file']
         assert sha256(path)==entry['sha256'],day
         assert sha256(source_path)==entry['raw_sha256'],day
-        a=pd.read_parquet(path);r=pd.read_parquet(source_path)
+        a=pd.read_parquet(path);r=pd.read_parquet(source_path,partitioning=None)  # no inferred year=/month= columns
         assert len(a)==len(r)==entry['rows'],day
         for col in PRICE_COLUMNS:
             np.testing.assert_allclose(a[col+'_raw'].astype(float),r[col].astype(float),equal_nan=True)
