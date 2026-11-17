@@ -51,3 +51,30 @@ payment differently. The price still drops by the full amount.
 | HGB hand + SPY | plus 18 SPY and stock-versus-SPY features | tree nodes, printed per cell |
 
 Targets: `dir`, `vol` and `xsdir` at 5, 15, 30 and 60 minutes, stride 12.
+
+## Results: `run_20261116_044159` (validation 2023)
+
+Full run on an L4 (`QUICK = False`): 12 cells × 4 networks + 2 HGBs, 549 minutes. CNNs trained on 300,000
+random training windows per cell; HGB on 1,000,000; every cell scored on all 247 validation days of 2023
+(~570,000 windows). Files: `results/run_20261116_044159/` and the executed `AllData_AllModel.ipynb`.
+The 2024–2025 test section has not been run.
+
+Validation AUC (95% day-bootstrap intervals in `grid_table.csv`):
+
+| model | vol 5 / 15 / 30 / 60 min | xsdir 5 / 15 / 30 / 60 min | dir 5 / 15 / 30 / 60 min |
+|---|---|---|---|
+| HGB hand + SPY | **0.690 / 0.672 / 0.668 / 0.680** | **0.520 / 0.512 / 0.510 / 0.508** | 0.516 / 0.497 / 0.498 / 0.507 |
+| HGB hand features | 0.684 / 0.665 / 0.659 / 0.672 | 0.518 / 0.511 / 0.509 / 0.506 | 0.506 / 0.501 / 0.501 / 0.506 |
+| 1D CNN + SPY | 0.664 / 0.646 / 0.634 / 0.654 | 0.508 / 0.500 / 0.502 / 0.500 | 0.499 / 0.501 / 0.490 / 0.502 |
+| image CNN + SPY panel | 0.662 / 0.646 / 0.634 / 0.648 | 0.508 / 0.500 / 0.501 / 0.502 | 0.498 / 0.496 / 0.494 / 0.503 |
+| image CNN | 0.658 / 0.639 / 0.637 / 0.649 | 0.507 / 0.500 / 0.501 / 0.500 | 0.500 / 0.498 / 0.499 / 0.503 |
+| 1D CNN | 0.657 / 0.641 / 0.633 / 0.650 | 0.511 / 0.503 / 0.504 / 0.502 | 0.503 / 0.503 / 0.495 / 0.505 |
+
+- **Volatility is predictable at every horizon; direction barely is.** vol AUC 0.63–0.69 for every model;
+  xsdir 0.50–0.52 (only HGB's intervals clear 0.5 at all horizons); dir is at 0.50 except HGB + SPY at 5 min (0.516).
+- **HGB beats the image CNN** in 8 of 12 cells and ties in 4 (paired day bootstrap). The image CNN beats the
+  1D CNN in 1 cell, loses in 5, ties in 6: the picture adds nothing over the same numbers.
+- **SPY helps a little.** HGB with SPY features beats HGB without in 6 cells and never loses; the SPY panel
+  helps the image CNN in 3 cells (never hurts); for the 1D CNN it helps in 3 and hurts in 2.
+- The CNNs stop early: the best epoch averaged 1.5–1.9 of 8, so more epochs on the same 300,000 windows
+  would not help; more training windows or a higher learning rate might.
