@@ -160,3 +160,19 @@ image CNN 0.658 / 0.638 / 0.637 / 0.648; DINOv2-S MLP probe 0.652 / 0.639 / 0.62
 - dir and xsdir stay at ~0.50 for every image model.
 
 Details: `results/probe_20261118_031436/` (QUICK pass: `results/probe_20261117_220602/`).
+
+## Charts with technical indicators (`IndicatorChart_CNN.ipynb`, not yet run)
+
+The original chart scales prices to the window's own low/high, so the level of volatility is not in the picture,
+while HGB gets `realized_vol` as a number. `indicator_cnn.py` retrains the same image CNN, with the same settings, rows
+and canvas, on six pictures:
+
+- the original chart, as a control;
+- the chart plus a 78-bar moving average that starts in the previous session;
+- the chart plus a band of EW standard deviation of 5-minute returns, drawn on one fixed log scale fitted on training
+  windows only;
+- the chart plus both indicators;
+- the original chart and the chart with both indicators, each also given the 38 hand + SPY numbers as a second input.
+
+Inputs span two sessions, so 2 sessions are embargoed on each side of each boundary. The scores are joined row by row
+with `run_20261116_044159`. A code check on synthetic data is in `tools/smoke_indicator_notebook.py`.
