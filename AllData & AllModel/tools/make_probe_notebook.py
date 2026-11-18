@@ -113,8 +113,8 @@ the random encoder only), about 20–30 minutes on an L4, to check everything ru
 **Time on an L4 (estimate, not measured on this data).** The full run renders ~300,000 training and ~570,000 validation
 charts once and feeds each to every encoder: roughly 20–40 minutes for DINOv2-S + random ViT-S, plus 30–60 minutes for
 CLIP ViT-B/16. Chart drawing runs on the CPU, so more CPU cores (High-RAM runtime) help. The probes then take 1–3 minutes
-per cell, about 30 minutes for all 12 cells. Features are cached on Drive (float16, about 5 GB for the full run), so a
-rerun or a new probe does not redo the encoders.
+per cell, about 30 minutes for all 12 cells. Features are cached on the Colab disk (float16, about 5 GB for the full
+run); set `FEATURES_ON_DRIVE = True` to keep them on Drive too, so a resume or a new probe does not redo the encoders.
 """)
 code("""
 from datetime import datetime, timezone
@@ -126,6 +126,7 @@ QUICK = False
 REFERENCE_RUN = "run_20261116_044159"              # AllData & AllModel run whose CNN/HGB scores are compared
 ENCODER_NAMES = ["dinov2_s", "dinov2_s_random", "clip_b16"]   # add "dinov2_b" for DINOv2 ViT-B/14
 PROBES = ["linear", "mlp"]
+FEATURES_ON_DRIVE = False                          # True: also copy the feature cache (~5 GB) to Drive for resuming
 SETTINGS = dict(
     stride=12, embargo_sessions=2,                 # sessions removed on each side of each split boundary
     max_train_windows=300_000,                     # same training budget as the CNNs (max_train_nn)
@@ -233,14 +234,16 @@ fig.tight_layout(); plt.show()
 
 md("""
 ## 5. Extract features (once, cached on Drive)
-Each chart is drawn once and passed through every encoder. Saved per chunk to `probe_runs/<RUN_ID>/features/`; a rerun
-skips finished chunks.
+Each chart is drawn once and passed through every encoder. Saved per chunk on the Colab disk; with
+`FEATURES_ON_DRIVE = True` also to `probe_runs/<RUN_ID>/features/` on Drive (~5 GB), so a rerun after a disconnect skips
+finished chunks. With the default (`False`) a disconnect means the features are extracted again; results, predictions
+and probe weights are always saved to Drive.
 """)
 code("""
 FEAT_LOCAL, FEAT_DRIVE = LOCAL / "features", RUN_DRIVE / "features"
 FEATS = {e: {} for e in ENCODER_NAMES}
 kw = dict(batch_size=SETTINGS["extract_batch"], workers=SETTINGS["num_workers"], chunk=SETTINGS["chunk"],
-          amp=SETTINGS["amp"], drive_dir=FEAT_DRIVE)
+          amp=SETTINGS["amp"], drive_dir=FEAT_DRIVE if FEATURES_ON_DRIVE else None)
 t0 = time.perf_counter()
 for split in ("train", "valid"):
     out = fp.extract(fp.StockCharts(PREPARED, W[split]), ENCODERS, FEAT_LOCAL, split, DEVICE, **kw)
