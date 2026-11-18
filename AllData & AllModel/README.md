@@ -139,3 +139,24 @@ tied in 7. Bold marks HGB cells whose change is at least +0.006 or is the one di
 
 Which cells' paired intervals exclude zero is not in this summary: the per-cell predictions (30 MB each) stay on
 Drive in `runs/run_20261116_044159/<cell>/predictions.parquet`.
+
+## Frozen pretrained encoders + probes (`FrozenEncoder_Probe.ipynb`)
+
+Same data, split, cells and rows as above. DINOv2 ViT-S/14 and CLIP ViT-B/16 are **frozen**; only a linear (logistic) or
+2-layer MLP probe is trained on their features, with and without SPY's chart features. A randomly initialised, frozen
+ViT-S is the floor. Probe scores are joined row by row with `run_20261116_044159`, so every model is scored on identical
+rows. Leakage controls: 2 whole sessions embargoed on each side of every split boundary, labels purged inside their split,
+the `vol` threshold and the feature standardisation fit on training rows only. Code: `frozen_probe.py`,
+notebook built by `tools/make_probe_notebook.py`, smoke test `tools/smoke_probe_notebook.py`.
+
+**Results, `probe_20261118_031436` (validation 2023, 243 days):** frozen probes almost match the image CNN trained from
+scratch but never beat it, and HGB stays best. vol AUC at 5 / 15 / 30 / 60 min: HGB + SPY 0.689 / 0.671 / 0.666 / 0.679;
+image CNN 0.658 / 0.638 / 0.637 / 0.648; DINOv2-S MLP probe 0.652 / 0.639 / 0.629 / 0.642; CLIP-B/16 MLP probe
+0.655 / 0.636 / 0.632 / 0.640; random ViT-S MLP probe 0.611 / 0.601 / 0.592 / 0.600.
+
+- Pretraining matters: DINOv2 beats the random encoder by about 0.04 on vol.
+- Frozen probe − scratch CNN: −0.002 to −0.003 AUC on average; worse in 4–5 of 12 cells, never better.
+- CLIP ≈ DINOv2, MLP ≈ linear, SPY features add nothing; HGB + SPY beats the best probe in 10 of 12 cells.
+- dir and xsdir stay at ~0.50 for every image model.
+
+Details: `results/probe_20261118_031436/` (QUICK pass: `results/probe_20261117_220602/`).
