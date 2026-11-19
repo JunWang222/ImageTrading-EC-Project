@@ -69,7 +69,7 @@ This is a **conservative filtered-trade demo**, not an official consolidated OHL
 - Raw source: `taqm_2023.ctm_YYYYMMDD`, using SIP timestamps and deterministic sequence tie-breaking.
 - Session: [09:30:00,16:00:00) Eastern; prints at exactly 16:00 and later are excluded.
 - Require positive price and size and correction code `00`.
-- Accept only sale-condition strings composed of spaces, `@`, `E`, and `F` (regular trades, automatic execution, and intermarket sweep). NULL condition strings are excluded.
+- Accept sale-condition strings that are blank or composed of spaces, `@`, `E`, and `F` (regular trades, automatic execution, and intermarket sweep). A blank condition is stored as NULL in WRDS and is the regular-sale code for Tape A/B (NYSE-, Arca- and other non-Nasdaq-listed) symbols; Tape C uses `@`. Policy version 1 excluded NULL, which kept about 19% of JPM's regular-session volume against 84% of AAPL's; version 2 keeps NULL. The existing 2023 H1 demo files were built with version 1 and must be downloaded again into a new directory. Evidence: [diagnostics/DATA_REVIEW_2026-11-19.md](diagnostics/DATA_REVIEW_2026-11-19.md).
 - Exclude odd lots, special opening/closing conditions, extended-hours, late, out-of-sequence, and other special conditions under this deliberately narrow whitelist.
 - OHLC, VWAP, volume, and trade count all use the same eligible subset. **Volume is eligible filtered volume, not total reported market volume.**
 - No quote-based outlier filtering or reconstruction of later cancellation/correction messages has been implemented. Screening correction flags alone is not full tape reconstruction.

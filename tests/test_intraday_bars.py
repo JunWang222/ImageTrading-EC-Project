@@ -41,7 +41,9 @@ class BarTests(unittest.TestCase):
         sql=aggregate_sql('taqm_2023.ctm_20230103',5)
         self.assertIn("time_m < '16:00:00'",sql)
         self.assertIn("tr_corr='00'",sql)
-        self.assertIn("translate(tr_scond, ' @EF', '') = ''",sql)
+        # Blank (NULL in WRDS) is the regular-sale condition on Tape A/B and must stay eligible.
+        self.assertIn("translate(coalesce(tr_scond,''), ' @EF', '') = ''",sql)
+        self.assertNotIn('tr_scond IS NOT NULL',sql)
         with self.assertRaises(ValueError):
             aggregate_sql('taqm_2023.x;drop',5)
         with self.assertRaises(ValueError):

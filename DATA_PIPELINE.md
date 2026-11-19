@@ -8,7 +8,7 @@ The 2023 H1 demo contains five-minute OHLCV derived from TAQ trades by server-si
 
 - Use each date's historical S&P 500 / NASDAQ 100 / DJIA 30 union, identified by PERMNO. Preserve historical ticker and TAQ symbol root/suffix separately.
 - Use New York regular-session timestamps and half-open intervals in [09:30,16:00). Bars are labeled by start time; complete bar information is available after the interval ends.
-- Require positive trade price and size, correction code `00`, and sale conditions containing only spaces, `@`, `E`, or `F`. NULL conditions, odd lots, special auctions, extended-hours, and other conditions outside this whitelist are excluded.
+- Require positive trade price and size, correction code `00`, and sale conditions that are blank (NULL in WRDS) or contain only spaces, `@`, `E`, or `F`. Odd lots, special auctions, extended-hours, and other conditions outside this whitelist are excluded. Policy version 1 also excluded NULL conditions, which removed the regular trades of every non-Nasdaq-listed symbol; the 2023 H1 demo described below was built with version 1. See [diagnostics/DATA_REVIEW_2026-11-19.md](diagnostics/DATA_REVIEW_2026-11-19.md).
 - OHLC, VWAP, volume, and trade count use the same eligible subset. Volume is filtered eligible share volume, not total tape volume.
 - Preserve empty intervals as missing prices with zero eligible volume/count; do not forward-fill. Preserve halted index members with explicit identifier/mapping status.
 - Raw prices remain unadjusted in the source directory; CRSP daily factors are stored separately. File checksums, membership coverage, interval grids, unique keys, and OHLC ordering have been checked.
