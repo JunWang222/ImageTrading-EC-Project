@@ -1,6 +1,6 @@
 # WRDS intraday demo
 
-The current data standard and latest-basis historical price adjustment are documented in [README.md](README.md#current-intraday-data-standard). Use `adjust_bar_prices.py` for a separate CFACPR-adjusted price dataset; the raw data described here remain unchanged.
+The current data standard and latest-basis historical price adjustment are documented in [DATA_PIPELINE.md](../DATA_PIPELINE.md#current-intraday-data-standard). Use `../PriceAdjustment/adjust_bar_prices.py` for a separate CFACPR-adjusted price dataset; the raw data described here remain unchanged.
 
 The downloader stores 5-minute bars for the historical union of S&P 500, NASDAQ 100, and DJIA 30. The verified adapter currently supports **2023-01-01 through 2023-06-30** only, covering 124 CRSP trading dates. All these sessions use the regular 09:30–16:00 US Eastern schedule. Other periods require session-calendar and source-schema validation, especially early closes.
 
@@ -69,8 +69,8 @@ This is a **conservative filtered-trade demo**, not an official consolidated OHL
 - Raw source: `taqm_2023.ctm_YYYYMMDD`, using SIP timestamps and deterministic sequence tie-breaking.
 - Session: [09:30:00,16:00:00) Eastern; prints at exactly 16:00 and later are excluded.
 - Require positive price and size and correction code `00`.
-- Accept sale-condition strings that are blank or composed of spaces, `@`, `E`, and `F` (regular trades, automatic execution, and intermarket sweep). A blank condition is stored as NULL in WRDS and is the regular-sale code for Tape A/B (NYSE-, Arca- and other non-Nasdaq-listed) symbols; Tape C uses `@`. Policy version 1 excluded NULL, which kept about 19% of JPM's regular-session volume against 84% of AAPL's; version 2 keeps NULL. The existing 2023 H1 demo files were built with version 1 and must be downloaded again into a new directory. Evidence: [diagnostics/DATA_REVIEW_2026-11-19.md](diagnostics/DATA_REVIEW_2026-11-19.md).
-- Exclude odd lots, special opening/closing conditions, extended-hours, late, out-of-sequence, and other special conditions under this deliberately narrow whitelist.
+- Accept sale-condition strings that are blank or composed of spaces, `@`, `E`, and `F` (regular trades, automatic execution, and intermarket sweep). A blank condition is stored as NULL in WRDS and is the regular-sale code for Tape A/B (NYSE-, Arca- and other non-Nasdaq-listed) symbols; Tape C uses `@`. Policy version 1 excluded NULL, which kept about 19% of JPM's regular-session volume against 84% of AAPL's; version 2 keeps NULL. The existing 2023 H1 demo files were built with version 1 and must be downloaded again into a new directory. Evidence: [DataCheck/DATA_REVIEW_2026-11-19.md](../DataCheck/DATA_REVIEW_2026-11-19.md).
+- Admit odd lots (`I`) from policy version 3. Exclude special opening/closing conditions, extended-hours, late, out-of-sequence, and other special conditions under this deliberately narrow whitelist.
 - OHLC, VWAP, volume, and trade count all use the same eligible subset. **Volume is eligible filtered volume, not total reported market volume.**
 - No quote-based outlier filtering or reconstruction of later cancellation/correction messages has been implemented. Screening correction flags alone is not full tape reconstruction.
 - Prices are raw, unadjusted transaction prices. Corporate-action factors are stored separately; windows spanning actions need consistent adjustment before modeling. Do not substitute the CRSP daily volume for the intraday eligible volume.
@@ -83,7 +83,7 @@ Before training, inspect missingness, outliers, corporate actions, membership ch
 
 ```bash
 python -m unittest discover -s tests -v
-python validate_intraday_demo.py
+python ../DataCheck/validate_intraday_demo.py
 ```
 
 Checks include historical membership/mapping validation, unique security/time keys, OHLC ordering, preservation of missing intervals and inactive members, explicit timezone handling, restricted query identifiers, and conservative filter construction. Live download status is recorded in the data manifest; a pilot or partial manifest is not evidence that all six months have completed.

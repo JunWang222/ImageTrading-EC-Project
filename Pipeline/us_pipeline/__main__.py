@@ -8,7 +8,7 @@ from .data import read_config,prepare,rescreen,audit_prepared
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('command',choices=['prepare','rescreen','audit','preview','train','test'])
-    p.add_argument('--config',default='configs/us_5min.json')
+    p.add_argument('--config',default=str(Path(__file__).resolve().parents[1]/'configs/us_5min.json'))
     p.add_argument('--smoke',action='store_true',help='Two train batches and a tiny validation subset; no test access')
     p.add_argument('--checkpoint',type=Path)
     p.add_argument('--source',type=Path,help='rescreen: existing prepared/ folder to copy bars from')

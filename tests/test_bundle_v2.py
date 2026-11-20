@@ -7,6 +7,7 @@
 2. Labels use unadjusted prices, and a label whose horizon contains an ex-date is dropped
    (chartcnn.data.build_split).
 """
+import paths  # noqa: F401  (step folders on sys.path)
 import json
 import sys
 import tempfile

@@ -18,18 +18,11 @@ Every model on the full 2016–2025 data, with and without the market (SPY).
 | Adjustment | CRSP CIZ factors and cash dividends; each window is put on the basis of its own last bar |
 | Split | train 2016–2022, validation 2023, test 2024–2025 |
 
-Build steps, from raw archive to bundle:
-
-```bash
-python prepare_archive_inputs.py                      # CIZ -> adjustment inputs (stocks)
-python adjust_dividend_bars.py --raw-root ..._adjustment_inputs --inputs ..._adjustment_inputs --output ..._dividend_adjusted
-python validate_dividend_bars.py --root ..._dividend_adjusted
-python download_benchmark_bars.py                     # CV repository: SPY bars on the same calendar
-# same three steps for the SPY archive
-python -m us_pipeline prepare --config configs/us_5min_2016_2025.json
-python -m us_pipeline audit   --config configs/us_5min_2016_2025.json
-python "AllData & AllModel/tools/build_alldata_bundle.py" --prepared ... --market ... --output .../alldata_bundle_v1.zip
-```
+**These results use `alldata_bundle_v1`**, built with trade-filter policy version 1. That filter dropped the
+regular trades of non-Nasdaq-listed stocks (from 2018) and of Nasdaq-listed stocks (early 2016), so volume
+inputs are biased by listing and year; prices are not affected (see `../DataCheck/README.md`). The v3
+rebuild follows the steps in the root README: DataDownload, DataCheck, PriceAdjustment, Pipeline, then
+`tools/build_alldata_bundle.py`.
 
 **Distribution classification (CIZ).** A record with a cash amount and no price or share factor is a cash
 dividend and gets the proportional chart adjustment. This covers ordinary, special, return of capital, capital

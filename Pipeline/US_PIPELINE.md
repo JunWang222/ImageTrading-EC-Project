@@ -79,28 +79,28 @@ Training uses unweighted CrossEntropyLoss on raw logits. Checkpoints minimize va
 ## Commands and outputs
 
 ```bash
-cd ImageTrading-EC-Project
+cd ImageTrading-EC-Project/Pipeline
 
 # Dependency list for a new environment; the local .venv is already configured.
 python -m pip install -r requirements-pipeline.txt
 
 # Already prepared in this workspace. Existing prepared outputs are protected.
-.venv/bin/python -m us_pipeline prepare --config configs/us_5min.json
-.venv/bin/python -m us_pipeline audit --config configs/us_5min.json
-.venv/bin/python -m us_pipeline preview --config configs/us_5min.json
+../.venv/bin/python -m us_pipeline prepare --config configs/us_5min.json
+../.venv/bin/python -m us_pipeline audit --config configs/us_5min.json
+../.venv/bin/python -m us_pipeline preview --config configs/us_5min.json
 
 # Short connectivity check, not a performance estimate; use a fresh smoke output.
-.venv/bin/python -m us_pipeline train --config configs/us_5min.json --smoke
+../.venv/bin/python -m us_pipeline train --config configs/us_5min.json --smoke
 
 # Full training has not been performed.
-.venv/bin/python -m us_pipeline train --config configs/us_5min.json
+../.venv/bin/python -m us_pipeline train --config configs/us_5min.json
 
 # Explicit final evaluation only after model/parameter selection.
-.venv/bin/python -m us_pipeline test --config configs/us_5min.json \
-  --checkpoint artifacts/cnn78u_5min_h1/training/best.pt
+../.venv/bin/python -m us_pipeline test --config configs/us_5min.json \
+  --checkpoint ../artifacts/cnn78u_5min_h1/training/best.pt
 ```
 
-The default artifact root is `artifacts/cnn78u_5min_h1`, separate from all earlier horizon-50 and legacy artifacts. Numeric memmaps, split Parquets, source fingerprints, screening counts, and audits are in `prepared/`. Examples are in `preview/`, and short validation runs in `smoke/`. Full training writes `training/best.pt` and a report. Final test evaluation writes probability rows and metrics to `test_evaluation/` only when explicitly requested, and rejects smoke checkpoints.
+The default artifact root is `artifacts/cnn78u_5min_h1` (relative paths in a config are resolved against the repository root), separate from all earlier horizon-50 and legacy artifacts. Numeric memmaps, split Parquets, source fingerprints, screening counts, and audits are in `prepared/`. Examples are in `preview/`, and short validation runs in `smoke/`. Full training writes `training/best.pt` and a report. Final test evaluation writes probability rows and metrics to `test_evaluation/` only when explicitly requested, and rejects smoke checkpoints.
 
 Do not reuse old sample indices or checkpoints from another input length. Change the artifact root when changing data/window/label settings. Existing outputs are not overwritten. Data parameters are verified against prepared metadata; checkpoint and prepared-data fingerprints are checked during test evaluation.
 

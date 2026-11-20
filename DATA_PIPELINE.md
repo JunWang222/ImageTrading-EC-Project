@@ -8,13 +8,27 @@ The 2023 H1 demo contains five-minute OHLCV derived from TAQ trades by server-si
 
 - Use each date's historical S&P 500 / NASDAQ 100 / DJIA 30 union, identified by PERMNO. Preserve historical ticker and TAQ symbol root/suffix separately.
 - Use New York regular-session timestamps and half-open intervals in [09:30,16:00). Bars are labeled by start time; complete bar information is available after the interval ends.
-- Require positive trade price and size, correction code `00`, and sale conditions that are blank (NULL in WRDS) or contain only spaces, `@`, `E`, or `F`. Odd lots, special auctions, extended-hours, and other conditions outside this whitelist are excluded. Policy version 1 also excluded NULL conditions, which removed the regular trades of every non-Nasdaq-listed symbol; the 2023 H1 demo described below was built with version 1. See [diagnostics/DATA_REVIEW_2026-11-19.md](diagnostics/DATA_REVIEW_2026-11-19.md).
+- Require positive trade price and size, correction code `00`, and sale conditions that are blank (NULL in WRDS) or contain only spaces, `@`, `E`, `F` or `I` (odd lots, under 100 shares; admitted from policy version 3). Special auctions, extended-hours, and other conditions outside this whitelist are excluded. Policy version 1 also excluded NULL conditions, which removed the regular trades of every non-Nasdaq-listed symbol; the 2023 H1 demo described below was built with version 1. See [DataCheck/DATA_REVIEW_2026-11-19.md](DataCheck/DATA_REVIEW_2026-11-19.md).
 - OHLC, VWAP, volume, and trade count use the same eligible subset. Volume is filtered eligible share volume, not total tape volume.
 - Preserve empty intervals as missing prices with zero eligible volume/count; do not forward-fill. Preserve halted index members with explicit identifier/mapping status.
 - Raw prices remain unadjusted in the source directory; CRSP daily factors are stored separately. File checksums, membership coverage, interval grids, unique keys, and OHLC ordering have been checked.
 - This is basic screening, not comprehensive cleaning: quote-based outlier checks and full cancellation/correction reconstruction remain outstanding.
 
 The downloaded dataset covers 124 trading dates with 5,057,130 interval records, including 224,156 empty intervals (4.43%). See its manifest and quality report for exact provenance.
+
+## Acceptance check before any model uses new bars
+
+Every new or re-downloaded bar archive must pass a reconciliation against CRSP daily data before it is
+adjusted, prepared or bundled. Results are reported for Nasdaq-listed stocks and for all other listings separately:
+
+- **Volume:** the share of CRSP daily volume that the eligible bars keep. The two groups must keep a
+  similar share in every year. A gap of several times means the trade filter treats the tapes differently.
+  Policy version 1 failed this test: by year the gap was 77% against 27%, then about equal, then 11% against 48%.
+- **Price:** the last bar's close against the CRSP close, and daily returns against CRSP returns.
+- **Coverage:** empty bars and complete windows in each group.
+
+Use `DataCheck/check_bar_coverage.py --archive` (offline) and `DataCheck/check_sale_conditions.py` (one session
+on WRDS); see `DataCheck/README.md` for the pass criteria. Do not build a bundle from an archive that fails.
 
 ## Latest-basis historical price adjustment
 
@@ -32,10 +46,10 @@ This is the requested forward adjustment of historical prices to the latest avai
 
 ```bash
 # Inspect and validate every source file without writing output.
-python adjust_bar_prices.py --dry-run
+python PriceAdjustment/adjust_bar_prices.py --dry-run
 
 # Create a separate adjusted dataset; never overwrite the raw bars.
-python adjust_bar_prices.py
+python PriceAdjustment/adjust_bar_prices.py
 ```
 
 Defaults read `~/Market Data/demo_2023_h1` and write a new sibling directory named `demo_2023_h1_price_adjusted`. Use `--input-root` and `--output` to change paths. Existing output directories are rejected to prevent accidental overwrites or double adjustment.
@@ -64,13 +78,13 @@ The demo adapter explicitly classifies the verified USD cash codes 1212, 1222, 1
 
 ```bash
 # Fetch inputs once into a new directory.
-python fetch_distribution_inputs.py
+python DataDownload/fetch_distribution_inputs.py
 
 # Generate a new adjusted dataset from raw bars and those inputs.
-python adjust_dividend_bars.py
+python PriceAdjustment/adjust_dividend_bars.py
 
 # Verify every saved file and formula against raw bars.
-python validate_dividend_bars.py
+python PriceAdjustment/validate_dividend_bars.py
 ```
 
 Defaults store inputs in `~/Market Data/demo_2023_h1_distribution_inputs` and adjusted data in `~/Market Data/demo_2023_h1_dividend_adjusted`. Existing directories are rejected. The raw and earlier corporate-action-only datasets remain intact.
@@ -117,12 +131,12 @@ The first prepared bundle (`artifacts/cnn78u_5min_h1`, `cnn78u_colab_bundle.zip`
 window whose next-bar return was exactly zero (163,566 windows, 4.6%). That selects windows on
 future data and biases every other target built from them (volatility, cross-sectional direction,
 longer horizons). Bundle v2 keeps them: same bars, `drop_zero_returns: false` in
-`configs/us_5min_v2.json`. Direction targets drop zero returns themselves, per target and horizon.
+`Pipeline/configs/us_5min_v2.json`. Direction targets drop zero returns themselves, per target and horizon.
 
 ```bash
 # Rebuild the window lists from an existing prepared folder (bars are unchanged) and audit them.
-python -m us_pipeline rescreen --config configs/us_5min_v2.json --source artifacts/cnn78u_5min_h1/prepared
-python -m us_pipeline audit --config configs/us_5min_v2.json
+PYTHONPATH=Pipeline python -m us_pipeline rescreen --config Pipeline/configs/us_5min_v2.json --source artifacts/cnn78u_5min_h1/prepared
+PYTHONPATH=Pipeline python -m us_pipeline audit --config Pipeline/configs/us_5min_v2.json
 python colab/build_colab_bundle.py --version v2          # colab/cnn78u_colab_bundle_v2.zip
 ```
 
@@ -141,8 +155,8 @@ Use Python 3.9+ on a machine with WRDS access or in WRDS JupyterHub:
 
 ```bash
 python -m pip install wrds
-python build_dynamic_universe.py --username YOUR_WRDS_USERNAME --inspect
-python build_dynamic_universe.py --username YOUR_WRDS_USERNAME --start 2020-01-01 --end 2020-12-31
+python DataDownload/build_dynamic_universe.py --username YOUR_WRDS_USERNAME --inspect
+python DataDownload/build_dynamic_universe.py --username YOUR_WRDS_USERNAME --start 2020-01-01 --end 2020-12-31
 ```
 
 The official WRDS Python client handles authentication. Do not store passwords in source files. `--inspect` reads metadata and prints candidate table columns, NASDAQ/Dow index names and IDs, and visible related tables, including TAQ tables. Visibility alone does not establish full subscription access or data quality; actual queries also check read permissions.
@@ -150,7 +164,7 @@ The official WRDS Python client handles authentication. Do not store passwords i
 If the index name cannot be resolved uniquely, select its `index_id` from the **exact index name** in the inspection report, preserving leading zeros:
 
 ```bash
-python build_dynamic_universe.py --start 2020-01-01 --end 2020-12-31 --ndx100-id VERIFIED_NDX_GVKEYX --djia30-id VERIFIED_DJIA_GVKEYX
+python DataDownload/build_dynamic_universe.py --start 2020-01-01 --end 2020-12-31 --ndx100-id VERIFIED_NDX_GVKEYX --djia30-id VERIFIED_DJIA_GVKEYX
 ```
 
 These IDs are placeholders and must be replaced. Do not select the NASDAQ Composite, a NASDAQ financial index, or the Dow Jones Transportation Average. The script does not guess fixed IDs or substitute QQQ/DIA holdings for index constituents.
@@ -158,7 +172,7 @@ These IDs are placeholders and must be replaced. Do not select the NASDAQ Compos
 The default includes **every calendar day**, including weekends, using the membership effective on each date. For trading dates only:
 
 ```bash
-python build_dynamic_universe.py --start 2020-01-01 --end 2020-12-31 --days trading
+python DataDownload/build_dynamic_universe.py --start 2020-01-01 --end 2020-12-31 --days trading
 ```
 
 Trading dates come from dates actually present in CRSP `dsi`, rather than a Monday-through-Friday calendar. Requests outside the available calendar range are rejected, including an end date beyond the database's latest date.

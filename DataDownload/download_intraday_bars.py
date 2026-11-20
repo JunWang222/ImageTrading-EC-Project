@@ -17,11 +17,11 @@ from pathlib import Path
 from build_dynamic_universe import build_universe, fetch_daily, records, table_ident
 
 POLICY = {
-    'version': 2,
+    'version': 3,
     'timezone': 'America/New_York',
     'session': '[09:30:00,16:00:00)',
     'bar_label': 'left; timestamps indicate interval start',
-    'trade_filter': "price>0, size>0, tr_corr='00', tr_scond NULL/blank or only spaces/@/E/F",
+    'trade_filter': "price>0, size>0, tr_corr='00', tr_scond NULL/blank or only spaces/@/E/F/I (I = odd lot, <100 shares)",
     'volume': 'Sum of shares for eligible filtered trades only; not total tape volume',
     'auctions': 'Special opening/closing sale conditions excluded; 16:00 prints excluded',
     'adjustment': 'Raw unadjusted OHLCV; CRSP daily split factors saved separately',
@@ -52,7 +52,10 @@ def aggregate_sql(table, minutes):
     # Arca, ...), and WRDS stores a blank tr_scond as NULL. Policy version 1 required NOT NULL, which
     # dropped the regular trades of every non-Nasdaq-listed symbol (about 19% of JPM's session volume
     # kept against 84% of AAPL's). NULL is therefore read as blank.
-    # Evidence: diagnostics/DATA_REVIEW_2026-11-19.md.
+    # Evidence: DataCheck/DATA_REVIEW_2026-11-19.md.
+    # Version 3 also admits odd lots ('I', under 100 shares). They are real trades at market prices;
+    # excluding them removes half or more of the volume of high-priced names, and their share grew over
+    # 2016-2025, so volume would not be comparable across stocks or years.
     return f'''WITH eligible AS (
         SELECT sym_root, coalesce(sym_suffix,'') AS sym_suffix,
             floor((extract(epoch FROM time_m)-34200)/{minutes * 60})::int AS bucket,
@@ -62,7 +65,7 @@ def aggregate_sql(table, minutes):
         WHERE sym_root = ANY(%(roots)s)
           AND time_m >= '09:30:00'::time AND time_m < '16:00:00'::time
           AND price > 0 AND size > 0 AND tr_corr='00'
-          AND translate(coalesce(tr_scond,''), ' @EF', '') = ''
+          AND translate(coalesce(tr_scond,''), ' @EFI', '') = ''
     ) SELECT sym_root, sym_suffix, bucket,
         (array_agg(price ORDER BY time_m,nano,tr_seqnum,tr_id,ex))[1] AS open,
         max(price) AS high, min(price) AS low,

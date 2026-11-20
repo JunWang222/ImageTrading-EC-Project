@@ -1,3 +1,4 @@
+import paths  # noqa: F401  (step folders on sys.path)
 import unittest
 import pandas as pd
 from download_intraday_bars import aggregate_sql, complete_grid
@@ -42,7 +43,7 @@ class BarTests(unittest.TestCase):
         self.assertIn("time_m < '16:00:00'",sql)
         self.assertIn("tr_corr='00'",sql)
         # Blank (NULL in WRDS) is the regular-sale condition on Tape A/B and must stay eligible.
-        self.assertIn("translate(coalesce(tr_scond,''), ' @EF', '') = ''",sql)
+        self.assertIn("translate(coalesce(tr_scond,''), ' @EFI', '') = ''",sql)
         self.assertNotIn('tr_scond IS NOT NULL',sql)
         with self.assertRaises(ValueError):
             aggregate_sql('taqm_2023.x;drop',5)

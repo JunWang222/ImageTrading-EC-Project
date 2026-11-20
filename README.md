@@ -6,22 +6,44 @@ local and are ignored by git.
 
 ## Layout
 
+Data steps, in the order they run (each folder has a README with its commands):
+
+| Step | Folder | What it does |
+|---|---|---|
+| 1 | `DataDownload/` | TAQ five-minute bars, index universe and CRSP reference data from WRDS (stocks 2016-2025, SPY). The trade filter is policy version 3: blank (NULL) sale conditions and odd lots are kept. |
+| 2 | `DataCheck/` | Acceptance check of every download against CRSP daily data: prices, volume kept by listing group and year, and coverage. A failing archive is not used. |
+| 3 | `PriceAdjustment/` | Split, cash-dividend and share-volume adjustment into a new folder; raw bars are never changed. |
+| 4 | `Pipeline/` | `us_pipeline`: audited 78-bar windows and the train, validation and test splits (`configs/`). |
+| 5 | `AllData & AllModel/tools/build_alldata_bundle.py` | Packages the prepared data, SPY and `chartcnn` into the Colab zip. |
+
+Local data layout for the current build (licensed data, never committed):
+
+```
+~/Market Data/US Equity/v3/
+  01_raw/  01_raw_spy/                 step 1
+  02_adjust_inputs/  02_adjusted/      step 3 (plus the same two with _spy)
+  03_prepared/                         step 4
+  04_bundle/alldata_bundle_v3.zip      step 5
+```
+
+Experiments and other folders:
+
 | Path | What it is |
 |---|---|
+| `AllData & AllModel/` | 2016-2025 grid (image CNN, 1D CNN, HGB, with and without SPY), frozen DINOv2/CLIP probes, indicator-chart CNN. Results so far use the v1 bundle. |
+| `Daily Chart Replication/` | The paper's daily I5/I20 image CNN on the same stocks. |
 | `CNN-Relevant/` | Chart CNN baseline (plain and residual/ResNet variants) and a 1D CNN on raw OHLCV, executed notebook, diagnostics and run results. See its README. |
+| `Multi-Target Chart CNN Baseline/` | Direction, volatility and cross-sectional direction at 5-60 minutes on the 2023 H1 demo. |
 | `Pretrained Model Comparison/` | Pretrained time-series foundation models (Chronos-2, TimesFM, Moirai, Kronos) against the chart CNN on the same samples, executed notebook and results. See its README. |
-| `build_dynamic_universe.py` | Daily S&P 500 ∪ NASDAQ 100 ∪ DJIA 30 universe from WRDS (CRSP/Compustat). |
-| `download_intraday_bars.py`, `validate_intraday_demo.py`, `inspect_wrds_demo.py` | Five-minute OHLCV bars aggregated from TAQ trades, and their checks. See `INTRADAY_DEMO.md`. |
-| `adjust_bar_prices.py` | Split / corporate-action price adjustment of the bars (CRSP `cfacpr`). |
-| `fetch_distribution_inputs.py`, `adjust_dividend_bars.py`, `validate_dividend_bars.py` | Cash-dividend-inclusive price and share-volume adjustment. |
-| `us_pipeline/`, `configs/us_5min.json` | CNN78u sample preparation, image rendering and training. See `US_PIPELINE.md`. |
 | `colab/` | Earlier CNN78u Colab tests: baseline, training-repair and LR-scheduler notebooks with their runners and validators. The data bundle (`cnn78u_colab_bundle.zip`) stays local. |
 | `diagnostics/` | Diagnosis of the CNN78u next-bar collapse (`BASELINE_DIAGNOSIS.md`, `check_baseline.py`). |
-| `tests/` | Offline unit tests for the pipeline. |
+| `tests/` | Offline unit tests (`tests/paths.py` puts the step folders on the import path). |
 
-Documentation: [DATA_PIPELINE.md](DATA_PIPELINE.md) (universe, bar standard and price
-adjustment), [INTRADAY_DEMO.md](INTRADAY_DEMO.md) (TAQ bar download),
-[US_PIPELINE.md](US_PIPELINE.md) (CNN78u pipeline).
+Documentation:
+- [DATA_PIPELINE.md](DATA_PIPELINE.md) covers the universe, the bar standard, the acceptance check and price adjustment.
+- [DataDownload/US_EQUITY_ARCHIVE.md](DataDownload/US_EQUITY_ARCHIVE.md) covers the 2016-2025 archive.
+- [DataDownload/INTRADAY_DEMO.md](DataDownload/INTRADAY_DEMO.md) covers the 2023 H1 demo.
+- [Pipeline/US_PIPELINE.md](Pipeline/US_PIPELINE.md) covers the CNN78u pipeline.
 
 ## Latest results (2023 H1 data, April 2023 validation)
 
@@ -42,7 +64,7 @@ Kronos, at 0.699 on a validation subsample, is the closest. Details, intervals a
 ## Setup
 
 ```bash
-python -m pip install -r requirements-pipeline.txt   # plus wrds / psycopg2 for WRDS access
+python -m pip install -r Pipeline/requirements-pipeline.txt -r DataDownload/requirements-archive.txt
 python -m unittest discover -s tests -v
 ```
 

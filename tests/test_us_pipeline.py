@@ -1,3 +1,4 @@
+import paths  # noqa: F401  (step folders on sys.path)
 import unittest
 import numpy as np
 import pandas as pd
@@ -82,7 +83,7 @@ class WindowTests(unittest.TestCase):
     def test_active_config_uses_full_session_and_rejects_legacy_windows(self):
         import json,tempfile
         from pathlib import Path
-        active=read_config(Path(__file__).resolve().parents[1]/'configs/us_5min.json')
+        active=read_config(Path(__file__).resolve().parents[1]/'Pipeline/configs/us_5min.json')
         self.assertEqual(active['lookback'],390//5)
         for changes in [{'lookback':49},{'lookback':9},{'bar_minutes':30}]:
             with tempfile.TemporaryDirectory() as d:
