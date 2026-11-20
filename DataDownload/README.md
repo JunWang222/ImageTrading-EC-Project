@@ -30,10 +30,19 @@ The evidence is in `../DataCheck/`. Check every new download there before using 
 ```bash
 cd DataDownload
 pip install -r requirements-archive.txt
-# pilot: one session per period, then run the DataCheck scripts on it
-python -u download_us_equity_archive.py --output ~/"Market Data/US Equity/v3/01_raw" --limit-days 1
-# full archive (resumes after an interruption)
-python run_archive_job.py ~/"Market Data/US Equity/v3/01_raw"
-python download_benchmark_bars.py --stock-archive ~/"Market Data/US Equity/v3/01_raw" \
-       --output ~/"Market Data/US Equity/v3/01_raw_spy"
+V3=~/"Market Data/US Equity/v3"
+
+# 1. Pilot: one session in each period where policy v1 failed differently, into the real archive folder.
+python -u download_us_equity_archive.py --output "$V3/01_raw" \
+       --days 2016-01-04,2017-06-01,2018-06-01,2023-06-01,2025-06-02
+python ../DataCheck/check_bar_coverage.py --archive --every 1 --root "$V3/01_raw"
+python ../DataCheck/check_sale_conditions.py --date 2016-01-04 --symbols JPM KO AAPL MSFT --detail
+
+# 2. Full archive, same folder: the pilot sessions are verified and skipped. Resumes after interruptions.
+python run_archive_job.py "$V3/01_raw"
+python download_benchmark_bars.py --stock-archive "$V3/01_raw" --output "$V3/01_raw_spy"
 ```
+
+The pilot passes when both listing groups keep a similar share of CRSP volume in every one of the five
+sessions. Policy v1 on the same sessions kept, for other listings and Nasdaq-listed stocks respectively:
+77/27%, 77/78%, 25/73%, 12/52% and 11/48%.
