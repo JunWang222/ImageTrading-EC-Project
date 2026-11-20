@@ -90,3 +90,25 @@ class DividendTests(unittest.TestCase):
 
 if __name__=='__main__':
     unittest.main()
+
+
+class CizKindTests(unittest.TestCase):
+    """Archive inputs (prepare_archive_inputs.py) classify by `kind`, not SIZ distcd."""
+    def ciz(self,kind,**extra):
+        f,e,r=inputs();e=e.drop(columns='distcd').assign(kind=kind,**extra)
+        return f,e,r
+
+    def test_cash_kind_matches_distcd_result(self):
+        f,a,audit,cash=prepare_adjustments(*self.ciz('cash'))
+        self.assertEqual(audit.treatment.iloc[0],'cash_chart_factor')
+        self.assertEqual(apply_adjustments(bar(),f).open.iloc[0],95.)
+
+    def test_corporate_kind_is_left_to_cumulative_factors(self):
+        f,a,audit,cash=prepare_adjustments(*self.ciz('corporate',divamt=0.,facpr=1.))
+        self.assertEqual(audit.treatment.iloc[0],'covered_by_cfacpr_cfacshr')
+        self.assertTrue(cash.empty)
+        self.assertEqual(apply_adjustments(bar(),f).open.iloc[0],100.)
+
+    def test_unknown_kind_fails(self):
+        with self.assertRaises(ValueError):
+            prepare_adjustments(*self.ciz('other'))

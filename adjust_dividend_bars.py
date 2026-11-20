@@ -54,22 +54,27 @@ def prepare_adjustments(raw_factors,events,references):
     audit=events.copy()
     audit['treatment']=''
     for i,event in audit.iterrows():
-        p=int(event.permno); code=int(event.distcd)
+        p=int(event.permno)
+        # CIZ inputs (prepare_archive_inputs.py) carry a `kind`; demo inputs carry SIZ `distcd`.
+        kind=event.kind if 'kind' in audit else ('cash' if int(event.distcd) in CASH_CODES else
+            'corporate' if int(event.distcd) in CORPORATE_CODES else f'code {int(event.distcd)}')
         if p not in bounds.index or not bounds.at[p,'min']<event.exdt<=bounds.at[p,'max']:
             audit.at[i,'treatment']='outside_adjustable_history'
-        elif code in CASH_CODES:
+        elif kind=='cash':
             if not np.isfinite(float(event.divamt)) or event.divamt<=0:
                 raise ValueError('Invalid cash dividend')
             if not np.isclose(float(event.facpr),0.) or not np.isclose(float(event.facshr),0.):
                 raise ValueError('Cash event already has corporate factors; extend policy before applying')
             audit.at[i,'treatment']='cash_chart_factor'
-        elif code in CORPORATE_CODES:
+        elif kind=='corporate':
             audit.at[i,'treatment']='covered_by_cfacpr_cfacshr'
         else:
-            raise ValueError(f'Unsupported distribution code {code}; classify before adjusting')
+            raise ValueError(f'Unsupported distribution ({kind}); classify before adjusting')
     details=[]
+    by_permno={k:v for k,v in refs.groupby('permno')}
+    rows_by_permno=f.groupby('permno').indices
     for (permno,exdt),group in audit[audit.treatment.eq('cash_chart_factor')].groupby(['permno','exdt']):
-        history=refs[refs.permno.eq(permno)]
+        history=by_permno[permno]
         previous=history[history.date.lt(exdt)].tail(1)
         current=history[history.date.eq(exdt)]
         if len(previous)!=1 or len(current)!=1:
@@ -86,8 +91,9 @@ def prepare_adjustments(raw_factors,events,references):
         multiplier=1-cash/reference
         if not 0<multiplier<1:
             raise ValueError(f'Invalid cash adjustment factor for {permno} {exdt}')
-        mask=f.permno.eq(permno)&f.date.lt(exdt)
-        f.loc[mask,'cash_dividend_multiplier']*=multiplier
+        idx=rows_by_permno[permno]
+        idx=idx[f.date.to_numpy()[idx]<exdt]
+        f.iloc[idx,f.columns.get_loc('cash_dividend_multiplier')]*=multiplier
         details.append(dict(permno=int(permno),exdt=exdt,cash_amount=cash,
             distribution_records=len(group),previous_date=previous.date,
             previous_price=price,previous_price_was_quote=bool(previous.prc<0),
@@ -146,7 +152,8 @@ def run(raw_root,inputs,output):
         'price_formula':'raw_price * base_cfacpr / cfacpr[t] * cash_multiplier[t]',
         'volume_formula':'raw_volume * cfacshr[t] / base_cfacshr; no cash dividend scaling',
         'return_interpretation':'Proportional dividend-adjusted chart prices, not exact reinvested total returns',
-        'event_classification':'Verified demo USD cash codes only; unknown codes fail',
+        'event_classification':('CIZ kind: cash if divamt>0 and facpr=facshr=0, corporate if a factor is nonzero'
+            if 'kind' in pd.read_parquet(event_file,columns=None).columns else 'Verified demo USD cash codes only; unknown codes fail'),
         'source_manifest_sha256':sha256(raw_root/'manifest.json'),
         'factor_sha256':sha256(factor_file),'events_sha256':sha256(event_file),
         'references_sha256':sha256(reference_file),'distribution_records':len(audit),
