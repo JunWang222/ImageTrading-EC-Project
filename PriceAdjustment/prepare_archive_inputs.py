@@ -24,7 +24,7 @@ import pandas as pd
 
 from adjust_bar_prices import sha256
 
-DEFAULT_ARCHIVE = Path.home()/'Market Data/US Equity/wrds_5min_2016_latest_v1'
+DEFAULT_ARCHIVE = Path.home()/'Market Data/US Equity/v3/01_raw'
 
 
 def read_partitions(root, pattern, columns=None):

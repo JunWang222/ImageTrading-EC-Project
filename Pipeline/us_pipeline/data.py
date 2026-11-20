@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-PROJECT=Path(__file__).resolve().parents[1]
+PROJECT=Path(__file__).resolve().parents[2]  # repository root: relative artifact roots stay where they were
 FEATURES=['open','high','low','close','volume']
 
 

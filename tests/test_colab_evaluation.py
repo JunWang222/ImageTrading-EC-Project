@@ -1,3 +1,4 @@
+import paths  # noqa: F401  (step folders on sys.path)
 import json
 import tempfile
 import unittest

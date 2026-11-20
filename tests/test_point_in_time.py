@@ -5,6 +5,7 @@ window by its anchor bar's multipliers must reproduce the point-in-time formula 
     price  = raw[d] * cfacpr[a] / cfacpr[d] * prod(1 - D[e] / P[e-1] for d < e <= a)
     volume = raw[d] * cfacshr[d] / cfacshr[a]
 """
+import paths  # noqa: F401  (step folders on sys.path)
 import importlib.util
 import unittest
 from pathlib import Path
@@ -25,7 +26,7 @@ def load(name, path):
     return module
 
 
-BASES = [load("us_images", "us_pipeline/images.py").prediction_basis,
+BASES = [load("us_images", "Pipeline/us_pipeline/images.py").prediction_basis,
          load("chartcnn_images", "CNN-Relevant/chartcnn/images.py").prediction_basis]
 POINT_IN_TIME = load("chartcnn_images", "CNN-Relevant/chartcnn/images.py").point_in_time_window
 

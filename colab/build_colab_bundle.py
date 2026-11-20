@@ -2,7 +2,7 @@
 
     python colab/build_colab_bundle.py                       # v1: artifacts/cnn78u_5min_h1
     python colab/build_colab_bundle.py --version v2          # v2: artifacts/cnn78u_5min_h1_v2,
-                                                             # all windows kept (configs/us_5min_v2.json)
+                                                             # all windows kept (Pipeline/configs/us_5min_v2.json)
 """
 import argparse
 import hashlib
@@ -11,8 +11,8 @@ from pathlib import Path
 import zipfile
 
 ROOT=Path(__file__).resolve().parents[1]
-VERSIONS={'v1':('artifacts/cnn78u_5min_h1/prepared','configs/us_5min.json','cnn78u_colab_bundle.zip'),
-          'v2':('artifacts/cnn78u_5min_h1_v2/prepared','configs/us_5min_v2.json','cnn78u_colab_bundle_v2.zip')}
+VERSIONS={'v1':('artifacts/cnn78u_5min_h1/prepared','Pipeline/configs/us_5min.json','cnn78u_colab_bundle.zip'),
+          'v2':('artifacts/cnn78u_5min_h1_v2/prepared','Pipeline/configs/us_5min_v2.json','cnn78u_colab_bundle_v2.zip')}
 
 
 def build(version='v1',prepared=None,output=None):
@@ -25,11 +25,11 @@ def build(version='v1',prepared=None,output=None):
     audit=json.loads((PREPARED/'validation_report.json').read_text())
     if audit['status']!='validated_complete':
         raise ValueError('Prepared sample audit is missing')
-    paths={f'us_pipeline/{p.name}':p for p in sorted((ROOT/'us_pipeline').glob('*.py'))}
+    paths={f'us_pipeline/{p.name}':p for p in sorted((ROOT/'Pipeline'/'us_pipeline').glob('*.py'))}
     paths.update({f'prepared/{p.name}':p for p in sorted(PREPARED.iterdir()) if p.is_file()})
     paths.update({'configs/'+Path(config).name:ROOT/config,
         'requirements-colab.txt':ROOT/'requirements-colab.txt','README.md':ROOT/'colab/README.md',
-        'US_PIPELINE.md':ROOT/'US_PIPELINE.md'})
+        'US_PIPELINE.md':ROOT/'Pipeline'/'US_PIPELINE.md'})
     report={'format_version':1,'bundle_version':version,'task':'CNN78u, L=78, H=1, five-minute bars',
         'drop_zero_returns':m['config'].get('drop_zero_returns',True),
         'samples':{k:v['samples'] for k,v in m['splits'].items()},'files':{}}

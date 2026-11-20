@@ -7,7 +7,7 @@ For every symbol it prints the share of regular-session volume kept by
 and, with --detail, the volume by sale condition. A blank condition (NULL in WRDS) is the regular
 sale on Tape A/B; Tape C marks it '@'. Results of 2026-11-19 are in DATA_REVIEW_2026-11-19.md.
 
-    python diagnostics/check_sale_conditions.py --date 2023-01-09 --symbols JPM KO AAPL MSFT SPY
+    python DataCheck/check_sale_conditions.py --date 2023-01-09 --symbols JPM KO AAPL MSFT SPY
 """
 import argparse
 import getpass

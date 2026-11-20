@@ -1,4 +1,5 @@
 """Regression checks for fixed sampling and the original collapse failure mode."""
+import paths  # noqa: F401  (step folders on sys.path)
 import unittest
 import numpy as np
 import torch

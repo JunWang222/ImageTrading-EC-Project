@@ -1,3 +1,4 @@
+import paths  # noqa: F401  (step folders on sys.path)
 import unittest
 import numpy as np
 import pandas as pd
