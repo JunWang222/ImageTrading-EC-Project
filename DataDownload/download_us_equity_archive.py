@@ -248,9 +248,10 @@ def archive_grid(day, universe, mapping, bars, minutes, session_minutes):
     bars['key'] = symbol_key(bars.sym_root,bars.sym_suffix)
     bars = bars.drop(columns=['sym_root','sym_suffix'])
     result = grid.merge(bars,on=['key','bucket'],how='left',validate='many_to_one').drop(columns='key')
-    has_trade = result.trade_count.notna()
+    has_trade = result.close.notna()
     result['status'] = np.where(result.sym_root.isna(),'no_symbol_mapping',
-                              np.where(has_trade,'observed','no_eligible_trades'))
+                              np.where(has_trade,'observed',
+                                       np.where(result.trade_count.notna(),'no_priced_trades','no_eligible_trades')))
     for col in ['volume','trade_count']:
         result[col] = result[col].fillna(0).astype('int64')
     for col in ['open','high','low','close','vwap']:
