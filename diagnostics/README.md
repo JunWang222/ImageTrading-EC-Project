@@ -42,3 +42,17 @@ reproduction. Baseline weights and source files are never updated by this script
 
 The first real-checkpoint findings are documented in
 [BASELINE_DIAGNOSIS.md](BASELINE_DIAGNOSIS.md).
+
+# Data review
+
+[DATA_REVIEW_2026-11-19.md](DATA_REVIEW_2026-11-19.md) reviews the 2023 H1 demo on the real files: what
+passed, and the one defect found (trade-filter policy version 1 dropped the regular trades of every symbol
+that is not Nasdaq-listed). Two scripts reproduce it and should be run again after any new download:
+
+```bash
+# Offline: prices, volume kept, empty bars and complete windows by listing group, against CRSP daily.
+python diagnostics/check_bar_coverage.py --root "~/Market Data/demo_2023_h1"
+
+# WRDS, read-only: volume kept by the old and the new filter, per symbol and sale condition.
+python diagnostics/check_sale_conditions.py --date 2023-01-09 --symbols JPM AAPL SPY --detail
+```
