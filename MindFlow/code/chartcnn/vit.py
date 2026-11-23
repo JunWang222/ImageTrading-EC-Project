@@ -9,7 +9,9 @@ neighbouring pixels are merged step by step), then a deep-narrow transformer bac
     soft split 3  unfold 3x3, stride 3     -> (H/18) x 13 tokens; 576 -> dim
     + class token + learned position embedding
     backbone      `depth` pre-norm transformer blocks (dim, heads, MLP ratio), stochastic depth
-    head          LayerNorm(class token) -> Dropout -> Linear(2), zero-initialised (P = 0.5 at start)
+    tokenizer     PyTorch default (fan-in) init and a LayerNorm after each projection, so tokens carry the image
+              at unit scale (the std-0.02 ViT init made them ~4x smaller than the position embedding)
+head          LayerNorm(class token) -> Dropout -> Linear(2), zero-initialised (P = 0.5 at start)
 
 T2T-ViT uses attention in the first soft-split stage too; at 78 x 78 = 6,084 tokens that is too slow
 for a Colab budget, so stage 1 uses a per-token MLP and only stage 2 (1,521 tokens) uses attention.
@@ -53,10 +55,10 @@ class T2TTokenizer(nn.Module):
         self.ss1 = nn.Unfold((7, 7), stride=(3, 3), padding=(3, 2))
         self.mlp1 = nn.Sequential(nn.Linear(49, 32), nn.GELU())
         self.ss2 = nn.Unfold((3, 3), stride=(2, 2), padding=(1, 1))
-        self.proj2 = nn.Linear(32 * 9, 64)
+        self.proj2 = nn.Sequential(nn.Linear(32 * 9, 64), nn.LayerNorm(64))
         self.t2t = Block(64, 1, 1.0)
         self.ss3 = nn.Unfold((3, 3), stride=(3, 3))
-        self.proj3 = nn.Linear(64 * 9, dim)
+        self.proj3 = nn.Sequential(nn.Linear(64 * 9, dim), nn.LayerNorm(dim))
         with torch.no_grad():
             self.grids = self._grids(torch.zeros(1, 1, *input_hw))
 
@@ -93,12 +95,15 @@ class ClassAndPosition(nn.Module):
 
 
 class ClassToken(nn.Module):
-    def __init__(self, dim):
+    """Image embedding: LayerNorm of the class token, or of the mean over all tokens (`pool="mean"`,
+    global average pooling, which trains more reliably than a class token on small data)."""
+
+    def __init__(self, dim, pool="cls"):
         super().__init__()
-        self.norm = nn.LayerNorm(dim)
+        self.norm, self.pool = nn.LayerNorm(dim), pool
 
     def forward(self, t):
-        return self.norm(t[:, 0])
+        return self.norm(t[:, 0] if self.pool == "cls" else t[:, 1:].mean(1))
 
 
 class ChartViT(nn.Module):
@@ -106,19 +111,24 @@ class ChartViT(nn.Module):
     maps it to two logits, the same interface as ChartCNN (parameter_table walks both)."""
 
     def __init__(self, dim=96, depth=8, heads=4, mlp_ratio=3.0, drop_path=0.1, dropout=0.1,
-                 input_hw=(234, 234), arch="vit"):
+                 input_hw=(234, 234), arch="vit", pool="mean"):
         super().__init__()
         self.arch, self.input_shape = arch, (1, *input_hw)
         tok = T2TTokenizer(dim, input_hw)
         (h3, w3) = tok.grids[2]
         rates = [drop_path * i / max(1, depth - 1) for i in range(depth)]
         self.features = nn.Sequential(tok, ClassAndPosition(dim, h3 * w3),
-                                      *[Block(dim, heads, mlp_ratio, r) for r in rates], ClassToken(dim))
+                                      *[Block(dim, heads, mlp_ratio, r) for r in rates], ClassToken(dim, pool))
         self.head = nn.Sequential(nn.Dropout(dropout), nn.Linear(dim, 2))
-        for m in self.modules():
+        # Tokenizer layers keep PyTorch's fan-in initialisation and end in a LayerNorm: with the
+        # usual ViT init (std 0.02) everywhere, a sparse chart's tokens came out ~4x smaller than the
+        # position embedding, the class token barely depended on the image, and training collapsed to
+        # a constant prediction (v4 Step 2a/3a, AUC 0.500, prob std 1e-5).
+        for m in list(self.features[1:].modules()) + list(self.head.modules()):
             if isinstance(m, nn.Linear):
                 nn.init.trunc_normal_(m.weight, std=0.02)
                 nn.init.zeros_(m.bias)
+        nn.init.zeros_(self.head[-1].bias)
         nn.init.zeros_(self.head[-1].weight)       # start at P = 0.5, like the CNNs
 
     def _on_my_device(self, x):
@@ -128,4 +138,8 @@ class ChartViT(nn.Module):
         return self.features(self._on_my_device(x))
 
     def forward(self, x):
-        return self.head(self.features(self._on_my_device(x)))
+        z = self.features(self._on_my_device(x))
+        # The head runs in float32 even under bfloat16 autocast: early in training the logits differ
+        # between images by ~1e-4, which bfloat16 rounds to ties (validation AUC exactly 0.500).
+        with torch.autocast(z.device.type, enabled=False):
+            return self.head(z.float())

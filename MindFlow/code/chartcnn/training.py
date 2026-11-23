@@ -37,7 +37,15 @@ def predict(model, loader, device, amp=False):
     return out
 
 
-def train_one_epoch(model, loader, optimizer, device, log_every, amp=False):
+def _lr_at(settings, step):
+    """Linear warmup over `warmup_steps` optimizer steps, then constant (0 = no warmup)."""
+    w = int(settings.get("warmup_steps", 0))
+    return settings["learning_rate"] * (min(1.0, (step + 1) / w) if w > 0 else 1.0)
+
+
+def train_one_epoch(model, loader, optimizer, device, log_every, amp=False, settings=None, first_step=0):
+    settings = settings or {}
+    clip = settings.get("grad_clip")
     model.train()
     seen = loss_sum = correct = 0
     start = time.perf_counter()
@@ -48,6 +56,11 @@ def train_one_epoch(model, loader, optimizer, device, log_every, amp=False):
         loss = nn.functional.cross_entropy(logits.float(), y)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
+        if settings.get("warmup_steps"):
+            for g in optimizer.param_groups:
+                g["lr"] = _lr_at(settings, first_step + b - 1)
+        if clip:
+            nn.utils.clip_grad_norm_(model.parameters(), clip)
         optimizer.step()
         seen += len(y); loss_sum += loss.item() * len(y); correct += (logits.argmax(1) == y).sum().item()
         if b % log_every == 0:
@@ -58,10 +71,11 @@ def train_one_epoch(model, loader, optimizer, device, log_every, amp=False):
 
 
 def fit(model, train_loader, valid_loader, y_valid, prior, settings, device, out_dir, drive_dir=None):
-    """Adam + early stopping on validation log loss. Resumes from out_dir/last.pt if present."""
+    """Adam (or AdamW, `optimizer="adamw"`) + early stopping on validation log loss. Optional
+    `warmup_steps` and `grad_clip`. Resumes from out_dir/last.pt if present."""
     out_dir = Path(out_dir)
-    optimizer = torch.optim.Adam(model.parameters(), lr=settings["learning_rate"],
-                                 weight_decay=settings["weight_decay"])
+    opt_class = torch.optim.AdamW if settings.get("optimizer") == "adamw" else torch.optim.Adam
+    optimizer = opt_class(model.parameters(), lr=settings["learning_rate"], weight_decay=settings["weight_decay"])
     history, best, bad, first = [], np.inf, 0, 1
     if (out_dir / "last.pt").exists():
         ck = torch.load(out_dir / "last.pt", map_location="cpu", weights_only=False)
@@ -75,10 +89,13 @@ def fit(model, train_loader, valid_loader, y_valid, prior, settings, device, out
         train_loader.generator.manual_seed(settings["seed"] + epoch)
         row = dict(epoch=epoch, **train_one_epoch(model, train_loader, optimizer, device,
                                                   max(1, len(train_loader) // 5),
-                                                  settings.get("amp", False)))
+                                                  settings.get("amp", False), settings,
+                                                  (epoch - 1) * len(train_loader)))
         p = predict(model, valid_loader, device, settings.get("amp", False))
         row.update({"val_" + k: v for k, v in metrics(y_valid, p, prior).items()})
         history.append(row)
+        if row["val_prob_std"] < 1e-3:
+            print(f"  warning: prob std {row['val_prob_std']:.1e}, predictions are nearly constant (collapsed)")
         print(f"epoch {epoch}: train_loss {row['train_loss']:.4f} | val AUC {row['val_roc_auc']:.4f} "
               f"| val log loss {row['val_log_loss']:.4f} ({row['val_log_loss_gain_vs_prior_pct']:+.2f}% vs prior) "
               f"| prob std {row['val_prob_std']:.3f}")

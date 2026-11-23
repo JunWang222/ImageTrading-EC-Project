@@ -97,6 +97,20 @@ def main():
         finally:
             nbformat.write(nb, WORK / "executed" / f"{name}.ipynb")
         print("  ok", flush=True)
+    if not ONLY or "Step3a_Intraday_Volatility_Models" in ONLY:       # retrain only the ViT of a finished run
+        nb = nbformat.read(NB_DIR / "Step3a_Intraday_Volatility_Models.ipynb", as_version=4)
+        for cell in nb.cells:
+            if cell.cell_type == "code" and "RETRAIN_ARCHS = []" in cell.source:
+                cell.source = cell.source.replace("RUN_ID = None", 'RUN_ID = "local_smoke"').replace(
+                    "RETRAIN_ARCHS = []", 'RETRAIN_ARCHS = ["vit"]')
+        print("running Step3a again with RETRAIN_ARCHS = ['vit']", flush=True)
+        try:
+            NotebookClient(nb, timeout=3600, kernel_name="python3", resources={"metadata": {"path": str(WORK)}}).execute()
+        finally:
+            nbformat.write(nb, WORK / "executed" / "Step3a_retrain_vit.ipynb")
+        done = json.loads((here / "runs" / "step3a_volatility_models" / "local_smoke" / "vol_h1" / "done.json").read_text())
+        assert "vit" in done.get("retrained", {}), done
+        print("  ok", flush=True)
     print("smoke run OK ->", WORK / "executed")
 
 

@@ -59,6 +59,11 @@ torch.backends.cudnn.benchmark = True
 are skipped and an unfinished network resumes from its last epoch. To add the 15- and 30-minute cells later, set
 `HORIZONS = {horizons[:-1]}, 3, 6]` with the same `RUN_ID`.
 
+**To retrain only some networks of a finished run** (e.g. the ViTs after the 2026-11-23 fix), set `RUN_ID` to that run
+and `RETRAIN_ARCHS = ["vit", "vit_spy"]`, keep every other setting, and Run all. Only those networks train again, on
+exactly the same rows (checked); HGB, rules and the CNNs are kept, the old networks are moved to
+`<cell>/<arch>_before_<version>/`, and the tables below are rebuilt with the new scores.
+
 **`QUICK = True`** is a small first pass (40,000 training windows, 3 epochs, every 5th validation day) to check that
 everything runs; its numbers are rough.
 
@@ -76,8 +81,8 @@ SETTINGS = dict(
     batch_size=4 if SMOKE else 128, eval_batch_size=8 if SMOKE else 1024,
     epochs=1 if SMOKE else 8, patience=2, min_delta=1e-5,       # early stop on validation log loss
     channels=[64, 128, 256], head_height=4, dropout=0.5,
-    vit_learning_rate=1e-4, vit_weight_decay=0.0,
-    vit_dim=96, vit_depth=8, vit_heads=4, vit_mlp_ratio=3.0, vit_drop_path=0.1, vit_dropout=0.1,
+    vit_learning_rate=3e-4, vit_weight_decay=0.05, vit_warmup_steps=1000, vit_grad_clip=1.0,   # AdamW
+    vit_pool="mean", vit_dim=96, vit_depth=8, vit_heads=4, vit_mlp_ratio=3.0, vit_drop_path=0.1, vit_dropout=0.1,
     max_train_nn=300_000, max_train_hgb=1_000_000, early_stop_every_kth_day=4,
     amp=True,                                     # bfloat16 autocast on A100/L4/H100; ignored on T4/CPU
     num_workers=0 if SMOKE else min(8, os.cpu_count() or 2),
@@ -89,13 +94,15 @@ HORIZONS = {horizons}                             # bars of 5 minutes (1 = 5 min
 KINDS = {kinds}
 STRIDE = 12                                       # one sample per stock per hour, for every horizon
 ARCHS = {ALL_ARCHS!r}
+RETRAIN_ARCHS = []                                # e.g. ["vit", "vit_spy"] with an old RUN_ID: retrain only these
 if SMOKE:
     ARCHS = ["plain", "plain_spy", "series1d", "vit"]
 CELLS = grid.grid_cells(HORIZONS, KINDS, STRIDE)
 RUN_ID, RUN_DRIVE, RESUME = mf.new_run(HERE, "{step}", RUN_ID, "grid", LOCAL_TEST)
 RUN_LOCAL = LOCAL_ROOT / "work" / RUN_DRIVE.parent.name / RUN_ID
 RUN_LOCAL.mkdir(parents=True, exist_ok=True)
-mf.save_settings(RUN_DRIVE, RESUME, settings=SETTINGS, cells=CELLS, archs=ARCHS, quick=QUICK, chartcnn=chartcnn.__version__)
+mf.save_settings(RUN_DRIVE, RESUME, settings=SETTINGS, cells=CELLS, archs=ARCHS, retrain=RETRAIN_ARCHS, quick=QUICK,
+                 chartcnn=chartcnn.__version__)
 print("RUN_ID:", RUN_ID, "->", RUN_DRIVE)
 print(len(CELLS), "cells:", ", ".join(c["name"] for c in CELLS), "|", len(ARCHS), "networks:", ", ".join(ARCHS))
 """), md("""
@@ -158,7 +165,7 @@ RESULTS, t0 = {}, time.perf_counter()
 for i, cell in enumerate(CELLS, 1):
     print("\\n" + "=" * 20, f"[{i}/{len(CELLS)}]", cell["name"], "=" * 20)
     RESULTS[cell["name"]] = grid.run_cell(PREPARED, cell, SETTINGS, ARCHS, DEVICE, RUN_LOCAL / cell["name"],
-                                          RUN_DRIVE / cell["name"], smoke=SMOKE)
+                                          RUN_DRIVE / cell["name"], smoke=SMOKE, retrain=RETRAIN_ARCHS)
     print(f"elapsed {(time.perf_counter() - t0) / 60:.1f} min")
 """), md("""
 ### Validation analysis
@@ -189,8 +196,9 @@ print("saved to", RUN_DRIVE)
 - **All AUCs clearly above 0.5**: the size of the next move is predictable from the chart (volatility clustering
   plus the intraday U-shape). This is also the positive control: the pipeline can learn.
 - **HGB vs image CNN** (paired line in the takeaways): on v1 data HGB won by 0.02–0.03 in every cell. Step 4 asks why.
-- **ViT vs CNN**: on v1 the scratch ViT collapsed (constant output) in most cells; frozen pretrained ViTs are in
-  Step 3b.
+- **ViT vs CNN**: the first v4 run's scratch ViT collapsed (constant output, AUC 0.500) because its tokens carried
+  almost no image information at initialisation; fixed in chartcnn 2026-11-23.2 (fan-in init and LayerNorm in the
+  tokenizer, mean pooling, AdamW with warmup and clipping, float32 head). Frozen pretrained ViTs are in Step 3b.
 """)), md("""
 ## 8. Held-out test 2024–2025 (run once, at the end)
 Only after every choice above is final. Each network is scored from its best validation checkpoint; HGB is refit on the

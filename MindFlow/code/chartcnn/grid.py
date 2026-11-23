@@ -42,11 +42,13 @@ ARCH_LABEL = {"plain": "image CNN", "plain_spy": "image CNN + SPY panel", "serie
 
 def arch_settings(settings, arch):
     """Per-architecture training settings. Transformers do not train at the CNNs' Adam 1e-5; they
-    get their own learning rate and weight decay (vit_learning_rate, vit_weight_decay)."""
+    get the usual ViT recipe: AdamW, their own learning rate and weight decay, linear warmup and
+    gradient clipping (vit_learning_rate, vit_weight_decay, vit_warmup_steps, vit_grad_clip)."""
     s = dict(settings, arch=arch)
     if arch.startswith("vit"):
-        s.update(learning_rate=settings.get("vit_learning_rate", 1e-4),
-                 weight_decay=settings.get("vit_weight_decay", 0.0))
+        s.update(learning_rate=settings.get("vit_learning_rate", 3e-4),
+                 weight_decay=settings.get("vit_weight_decay", 0.05), optimizer="adamw",
+                 warmup_steps=settings.get("vit_warmup_steps", 1000), grad_clip=settings.get("vit_grad_clip", 1.0))
     return s
 
 
@@ -80,33 +82,31 @@ def _restore(src, dst):
                 shutil.copy2(f, Path(dst) / f.name)
 
 
-def run_cell(prepared, cell, settings, archs, device, local_dir, drive_dir=None, smoke=False):
-    """Labels -> baselines -> one CNN per arch -> predictions.parquet. Skips if already done."""
+def run_cell(prepared, cell, settings, archs, device, local_dir, drive_dir=None, smoke=False, retrain=()):
+    """Labels -> baselines -> one CNN per arch -> predictions.parquet. Skips if already done.
+
+    `retrain`: networks of a finished cell to train again (e.g. ["vit", "vit_spy"] after a fix). Only
+    those networks are retrained, on the same rows; their scores in predictions.parquet are replaced
+    and every other model is kept. A network already retrained with this code version is skipped."""
     local_dir = Path(local_dir)
     drive_dir = Path(drive_dir) if drive_dir is not None else None
     done_at = (drive_dir or local_dir) / "done.json"
     if done_at.exists():
-        print(f"{cell['name']}: already done, loading saved predictions")
-        return load_cell(done_at.parent)
+        info = json.loads(done_at.read_text())
+        todo = [a for a in retrain if info.get("retrained", {}).get(a) != _code_version()]
+        if not todo:
+            print(f"{cell['name']}: already done, loading saved predictions")
+            return load_cell(done_at.parent)
+        return _retrain_cell(prepared, cell, settings, todo, device, local_dir, drive_dir, info, smoke)
 
     start = time.perf_counter()
     local_dir.mkdir(parents=True, exist_ok=True)
     seed_all(settings["seed"])
     store = Store(prepared)
-    train, median = build_split(store, "train", cell["target"], cell["horizon"], cell["stride"])
-    valid, _ = build_split(store, "validation", cell["target"], cell["horizon"], cell["stride"], median)
-    if smoke:                                               # tiny code check only
-        train = train.sample(256, random_state=0).reset_index(drop=True)
-        times = valid.end_index.drop_duplicates().sample(2, random_state=0)
-        valid = valid[valid.end_index.isin(times)].reset_index(drop=True)
-    kv = max(1, int(settings.get("validation_every_kth_day", 1)))     # quick runs: fewer validation days
-    if kv > 1:
-        valid = valid[valid.decision_date.isin(np.sort(valid.decision_date.unique())[::kv])].reset_index(drop=True)
+    train, nn_train, valid, median = _cell_rows(prepared, cell, settings, smoke)
     full_train = len(train)
     # Neural models train on a random subset (whole years of 5-minute windows do not fit a Colab
     # budget); HGB uses its own, larger cap. Validation is always the full validation year.
-    nn_train = train.sample(min(settings.get("max_train_nn", len(train)), len(train)),
-                            random_state=settings["seed"]).reset_index(drop=True)
     print(f"{cell['name']} ({KIND_LABEL[cell['kind']]}, next {cell['minutes']} min, stride {cell['stride']}): "
           f"{full_train:,} train ({len(nn_train):,} used by the CNNs) / {len(valid):,} validation; positive share "
           f"{train.label.mean():.3f} / {valid.label.mean():.3f}")
@@ -116,33 +116,8 @@ def run_cell(prepared, cell, settings, archs, device, local_dir, drive_dir=None,
     params = {name: tree_size(m) for name, m in hgbs.items()}   # HGB "parameters" = tree nodes
     epochs = {}
     for arch in archs:
-        s = arch_settings(settings, arch)
-        sub_local, sub_drive = local_dir / arch, (drive_dir / arch if drive_dir else None)
-        sub_local.mkdir(parents=True, exist_ok=True)
-        _restore(sub_drive, sub_local)
-        seed_all(settings["seed"])
-        model = build_model(s).to(device)
-        params[arch] = print_parameter_count(model, f"{cell['name']} {ARCH_LABEL.get(arch, arch)} ({arch})")
-        w = settings["num_workers"]
-        train_loader = make_loader(make_dataset(prepared, nn_train, arch), settings["batch_size"], w, True,
-                                   settings["seed"])
-        valid_loader = make_loader(make_dataset(prepared, valid, arch), settings["eval_batch_size"], w, False)
-        # Early stopping looks at a fixed subset of whole validation days (every k-th day) to save
-        # GPU time; the final scores below use the full validation year.
-        k = max(1, int(settings.get("early_stop_every_kth_day", 1)))
-        es_days = np.sort(valid.decision_date.unique())[::k]
-        es = valid[valid.decision_date.isin(es_days)].reset_index(drop=True)
-        es_loader = make_loader(make_dataset(prepared, es, arch), settings["eval_batch_size"], w, False)
-        history = fit(model, train_loader, es_loader, es.label.to_numpy(), prior, s, device,
-                      sub_local, sub_drive)
-        # Score validation with the best checkpoint (works the same after a resume).
-        model.load_state_dict(torch.load(sub_local / "best.pt", map_location=device, weights_only=False)["model"])
-        scores[f"cnn_{arch}"] = predict(model, valid_loader, device, settings.get("amp", False))
-        del es_loader
-        epochs[arch] = int(history.loc[history.val_log_loss.idxmin(), "epoch"])
-        del model, train_loader, valid_loader
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        scores[f"cnn_{arch}"], params[arch], epochs[arch] = _train_arch(
+            prepared, cell, settings, arch, device, nn_train, valid, prior, local_dir, drive_dir)
 
     keep = ["security_index", "permno", "end_index", "decision_date", "label", "forward_return", "xs_return"]
     out = valid[keep].copy()
@@ -158,6 +133,98 @@ def run_cell(prepared, cell, settings, archs, device, local_dir, drive_dir=None,
                 minutes=round((time.perf_counter() - start) / 60, 1), smoke=smoke)
     save_json(local_dir / "done.json", info, drive_dir)       # written last: marks the cell finished
     print(f"{cell['name']}: done in {info['minutes']} min")
+    return load_cell(local_dir)
+
+
+def _code_version():
+    from . import __version__
+    return __version__
+
+
+def _cell_rows(prepared, cell, settings, smoke):
+    """The training subset and validation rows of a cell, exactly as run_cell builds them."""
+    store = Store(prepared)
+    train, median = build_split(store, "train", cell["target"], cell["horizon"], cell["stride"])
+    valid, _ = build_split(store, "validation", cell["target"], cell["horizon"], cell["stride"], median)
+    if smoke:
+        train = train.sample(256, random_state=0).reset_index(drop=True)
+        times = valid.end_index.drop_duplicates().sample(2, random_state=0)
+        valid = valid[valid.end_index.isin(times)].reset_index(drop=True)
+    kv = max(1, int(settings.get("validation_every_kth_day", 1)))
+    if kv > 1:
+        valid = valid[valid.decision_date.isin(np.sort(valid.decision_date.unique())[::kv])].reset_index(drop=True)
+    nn_train = train.sample(min(settings.get("max_train_nn", len(train)), len(train)),
+                            random_state=settings["seed"]).reset_index(drop=True)
+    return train, nn_train, valid, median
+
+
+def _train_arch(prepared, cell, settings, arch, device, nn_train, valid, prior, local_dir, drive_dir):
+    """Train one network on a cell; returns (validation scores, parameters, best epoch)."""
+    s = arch_settings(settings, arch)
+    sub_local, sub_drive = local_dir / arch, (drive_dir / arch if drive_dir else None)
+    sub_local.mkdir(parents=True, exist_ok=True)
+    _restore(sub_drive, sub_local)
+    (sub_local / "code_version.txt").write_text(_code_version())
+    mirror(sub_local / "code_version.txt", sub_drive)
+    seed_all(settings["seed"])
+    model = build_model(s).to(device)
+    n_params = print_parameter_count(model, f"{cell['name']} {ARCH_LABEL.get(arch, arch)} ({arch})")
+    w = settings["num_workers"]
+    train_loader = make_loader(make_dataset(prepared, nn_train, arch), settings["batch_size"], w, True,
+                               settings["seed"])
+    valid_loader = make_loader(make_dataset(prepared, valid, arch), settings["eval_batch_size"], w, False)
+    # Early stopping looks at a fixed subset of whole validation days (every k-th day) to save
+    # GPU time; the final scores below use the full validation year.
+    k = max(1, int(settings.get("early_stop_every_kth_day", 1)))
+    es_days = np.sort(valid.decision_date.unique())[::k]
+    es = valid[valid.decision_date.isin(es_days)].reset_index(drop=True)
+    es_loader = make_loader(make_dataset(prepared, es, arch), settings["eval_batch_size"], w, False)
+    history = fit(model, train_loader, es_loader, es.label.to_numpy(), prior, s, device,
+                  sub_local, sub_drive)
+    # Score validation with the best checkpoint (works the same after a resume).
+    model.load_state_dict(torch.load(sub_local / "best.pt", map_location=device, weights_only=False)["model"])
+    p = predict(model, valid_loader, device, settings.get("amp", False))
+    del es_loader
+    epoch = int(history.loc[history.val_log_loss.idxmin(), "epoch"])
+    del model, train_loader, valid_loader
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    return p, n_params, epoch
+
+
+def _retrain_cell(prepared, cell, settings, archs, device, local_dir, drive_dir, info, smoke):
+    """Retrain some networks of a finished cell on the same rows and replace their scores."""
+    start = time.perf_counter()
+    src = drive_dir or local_dir
+    local_dir.mkdir(parents=True, exist_ok=True)
+    pred = pd.read_parquet(src / "predictions.parquet")
+    seed_all(settings["seed"])
+    _, nn_train, valid, _ = _cell_rows(prepared, cell, settings, smoke)
+    keys = ["security_index", "end_index"]
+    assert len(valid) == len(pred) and (valid[keys].to_numpy() == pred[keys].to_numpy()).all(), \
+        "validation rows differ from the finished cell: keep the run's SETTINGS (seed, max_train_nn, ...)"
+    assert len(nn_train) == info["nn_train_samples"], "training subset differs from the finished cell"
+    print(f"{cell['name']}: retraining {', '.join(archs)} on the same {len(nn_train):,} / {len(valid):,} rows "
+          f"(other models kept)")
+    for arch in archs:
+        for folder in (local_dir / arch, drive_dir / arch if drive_dir else None):
+            marker = folder / "code_version.txt" if folder is not None else None
+            if folder is not None and folder.is_dir() and \
+                    (not marker.exists() or marker.read_text().strip() != _code_version()):
+                old = folder.with_name(f"{arch}_before_{_code_version()}")   # old network: set aside
+                if old.exists():
+                    shutil.rmtree(folder)                    # leftover of an unmarked attempt
+                else:
+                    folder.rename(old)
+        p, n, e = _train_arch(prepared, cell, settings, arch, device, nn_train, valid, info["prior"],
+                              local_dir, drive_dir)
+        pred[f"score_cnn_{arch}"] = np.asarray(p, float)
+        info["parameters"][arch], info["best_epoch"][arch] = n, e
+        info.setdefault("retrained", {})[arch] = _code_version()
+        pred.to_parquet(local_dir / "predictions.parquet", index=False)
+        mirror(local_dir / "predictions.parquet", drive_dir)
+        save_json(local_dir / "done.json", info, drive_dir)
+    print(f"{cell['name']}: retrained in {(time.perf_counter() - start) / 60:.1f} min")
     return load_cell(local_dir)
 
 

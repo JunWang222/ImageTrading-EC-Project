@@ -149,6 +149,7 @@ def build_model(settings):
         return ChartViT(dim=settings.get("vit_dim", 96), depth=settings.get("vit_depth", 8),
                         heads=settings.get("vit_heads", 4), mlp_ratio=settings.get("vit_mlp_ratio", 3.0),
                         drop_path=settings.get("vit_drop_path", 0.1), dropout=settings.get("vit_dropout", 0.1),
+                        pool=settings.get("vit_pool", "mean"),
                         input_hw=(468, 234) if market else (234, 234), arch=arch)
     if INPUT_KIND[arch] == "series":
         return SeriesCNN1D(channels=tuple(settings.get("series_channels", SERIES_CHANNELS)),
