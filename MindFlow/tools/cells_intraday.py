@@ -852,3 +852,136 @@ if FOUND["4b"] is not None:
         print(f.parent.name); display(pd.read_csv(f).round(4))
 """)]
     return c
+
+
+# ============================================================================= Step 6a
+def regime_cells():
+    c = [header("6a", "Market regime (VIX) for volatility", "The vol label uses each stock's fixed training-period median "
+                "|r|, so the volatility regime is part of what it measures. Do the VIX and multi-day realized volatility "
+                "raise HGB's AUC beyond the 38 hand + SPY numbers?", """
+HGB only (the strongest model so far, Step 3a: 0.689 / 0.679), same rows for every feature set, scored on 2023 with a
+paired day bootstrap against the 38-feature model. The test years are not used.
+
+| feature set | what is added to the 38 hand + SPY numbers |
+|---|---|
+| `+ VIX` | previous session's VIX close (log), its 1- and 5-session change, distance to its 20-session mean |
+| `+ multi-day RV` | stock realized vol over the last 5 and 20 completed sessions, their ratio, and SPY's 5/20-session RV |
+| `+ VIX + multi-day RV` | both |
+| `regime only` | the 9 regime features alone (no 38) |
+
+VIX comes from Cboe's public daily file (downloaded once, cached in `MindFlow/data/`). Only closes of sessions **before**
+the decision day are used. Realized vol uses intraday 5-minute returns of completed sessions only (no overnight gap,
+so no ex-date is ever inside a return). CPU is enough; turn on High-RAM (the bundle's price arrays need ~6 GB).
+""")]
+    c += setup("""
+import chartcnn
+import feature_select as fs
+import regime as rg
+print("regime", rg.__version__, "| feature_select", fs.__version__)
+""", gpu=False)
+    c += [md("""
+## 2. Configuration
+**Time (estimate, Colab CPU High-RAM):** realized-vol tables ~2 min; per cell 5 HGB fits on 1,000,000 rows
+~4 min each + bootstrap ~3 min, so ~25 min per cell, ~50 min in all. `QUICK = True`: 300,000 rows, ~15 min.
+"""), code("""
+SMOKE = LOCAL_TEST
+RUN_ID = None
+QUICK = False
+HORIZONS = [1, 12]                                 # bars of 5 minutes
+SETTINGS = dict(stride=12, max_train=1_000_000, min_bars=60, seed=69)
+if QUICK:
+    SETTINGS.update(max_train=300_000)
+if SMOKE:
+    SETTINGS.update(max_train=3_000, min_bars=10)
+CELLS = [dict(name=f"vol_h{h}", kind="vol", target="vol", horizon=h, minutes=5 * h, stride=SETTINGS["stride"]) for h in HORIZONS]
+RUN_ID, RUN_DIR, RESUME = mf.new_run(HERE, "6a", RUN_ID, "regime", LOCAL_TEST)
+mf.save_settings(RUN_DIR, RESUME, settings=SETTINGS, cells=CELLS, quick=QUICK, regime=rg.__version__)
+print("RUN_ID:", RUN_ID, "->", RUN_DIR)
+"""), md("## 3. Regime features (VIX and multi-day realized volatility)"), code("""
+store = chartcnn.Store(PREPARED)
+VIX_CACHE = HERE / "data" / "VIX_History.csv"
+vix = rg.load_vix(VIX_CACHE)
+print(f"VIX: {len(vix):,} closes, {vix.index[0]} … {vix.index[-1]} (cached at {VIX_CACHE})")
+sessions = np.unique(store.dates)
+missing = [d for d in sessions if d not in vix.index]
+print(f"bundle sessions without a VIX close: {len(missing)}", missing[:5])
+VIXF = rg.vix_table(vix, sessions)
+t0 = time.perf_counter()
+RV = rg.rv_tables(store, SETTINGS["min_bars"])
+print(f"realized-vol tables in {(time.perf_counter() - t0) / 60:.1f} min:", {k: v.shape for k, v in RV.items()})
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots(2, 1, figsize=(11, 5), sharex=True)
+days = pd.to_datetime(sessions)
+ax[0].plot(days, np.exp(VIXF.vix_log.to_numpy()), lw=0.8); ax[0].set_ylabel("VIX (prev. close)")
+if "spy_rv20d" in RV:
+    ax[1].plot(days, RV["spy_rv20d"][:len(days)], lw=0.8, c="tab:orange"); ax[1].set_ylabel("SPY RV, 20 sessions")
+for a in ax:
+    a.axvspan(pd.Timestamp(store.config["train_end"]), pd.Timestamp(store.config["validation_end"]), color="gray", alpha=0.15)
+ax[0].set_title("regime features (grey = validation 2023)")
+fig.tight_layout(); fig.savefig(RUN_DIR / "regime_series.png", dpi=120); plt.show()
+"""), md("""
+## 4. HGB with and without regime features, per cell
+"""), code("""
+ALL = {}
+for cell in CELLS:
+    out = RUN_DIR / cell["name"]; out.mkdir(exist_ok=True)
+    if (out / "comparison.csv").exists():
+        print(cell["name"], "already done"); ALL[cell["name"]] = {k: pd.read_csv(out / f"{k}.csv") for k in ("comparison", "by_regime", "importance")}
+        continue
+    print("\\n" + "=" * 20, cell["name"], "=" * 20)
+    t0 = time.perf_counter()
+    d, X = rg.build(store, cell, SETTINGS, RV, VIXF)
+    base = [c for c in X["train"].columns if c not in sum(rg.GROUPS.values(), [])]
+    print(f"train {len(d['train']):,} | validation {len(d['valid']):,} on {d['valid'].decision_date.nunique()} days | "
+          f"{len(base)} base + {X['train'].shape[1] - len(base)} regime features")
+    print("missing share of regime features (validation):", X["valid"][sum(rg.GROUPS.values(), [])].isna().mean().round(3).to_dict())
+    subsets = {"38 hand + SPY": base,
+               "+ VIX": base + rg.VIX_COLS,
+               "+ multi-day RV": base + rg.GROUPS["multi-day RV"],
+               "+ VIX + multi-day RV": base + sum(rg.GROUPS.values(), []),
+               "regime only": sum(rg.GROUPS.values(), [])}
+    comp, scores, models = rg.compare(d, X, subsets, SETTINGS["seed"], n_boot=50 if SMOKE else 300)
+    display(comp.round(4))
+    reg = rg.by_regime(d["valid"], scores, X["valid"].vix_log.to_numpy(), list(subsets))
+    print("AUC within VIX terciles of 2023 (previous close):"); display(reg.round(4))
+    full = "+ VIX + multi-day RV"
+    _, imp = fs.permutation_importance(models[full], X["valid"][subsets[full]], d["valid"].label.to_numpy(),
+                                       1 if SMOKE else 3, SETTINGS["seed"])
+    res = dict(comparison=comp, by_regime=reg, importance=imp)
+    for k, v in res.items():
+        v.to_csv(out / f"{k}.csv", index=False)
+    ALL[cell["name"]] = res
+    print(f"{cell['name']} done in {(time.perf_counter() - t0) / 60:.1f} min")
+"""), md("## 5. Summary"), code("""
+rows = []
+for name, r in ALL.items():
+    t = r["comparison"].assign(cell=name)
+    rows.append(t)
+SUMMARY = pd.concat(rows)[["cell", "model", "n_features", "tree_nodes", "auc", "auc_low", "auc_high", "diff_vs_ref",
+                           "diff_low", "diff_high", "verdict"]]
+SUMMARY.to_csv(RUN_DIR / "summary.csv", index=False)
+display(SUMMARY.round(4))
+for name, r in ALL.items():
+    imp = r["importance"]
+    reg = imp[imp.feature.isin(sum(rg.GROUPS.values(), []))]
+    print(f"{name}: regime features by permutation importance (2023, full model):")
+    display(reg.round(5))
+lines = []
+for name, r in ALL.items():
+    t = r["comparison"].set_index("model")
+    for m in ("+ VIX", "+ multi-day RV", "+ VIX + multi-day RV"):
+        x = t.loc[m]
+        lines.append(f"- {name} {m}: AUC {x.auc:.4f} vs {t.loc['38 hand + SPY'].auc:.4f}, "
+                     f"diff {x.diff_vs_ref:+.4f} [{x.diff_low:+.4f}, {x.diff_high:+.4f}] -> {x.verdict}")
+TAKEAWAYS = "\\n".join(lines)
+(RUN_DIR / "takeaways.md").write_text(TAKEAWAYS + "\\n"); print(TAKEAWAYS)
+"""), md("""
+### How to read it
+- **`+ VIX` better**: the market's expected volatility adds what one session of bars cannot see; worth adding to the
+  CNN's feature branch (Step 4) and trying the VIXY intraday panel.
+- **`+ multi-day RV` better but `+ VIX` tied**: the stock's own slower volatility is what matters; VIX adds nothing.
+- **All tied**: the 78-bar window already captures the regime; VIX is not worth the extra data.
+- **By VIX tercile**: the share of positive labels should rise with VIX (fixed threshold); a model whose AUC drops in
+  the high tercile is mis-calibrated across regimes.
+""")]
+    return c

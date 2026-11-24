@@ -32,7 +32,7 @@ STEP_FOLDERS = {
     "2a": "step2a_direction_models", "2b": "step2b_direction_pretrained",
     "3a": "step3a_volatility_models", "3b": "step3b_volatility_pretrained",
     "4a": "step4a_image_information", "4b": "step4b_feature_selection",
-    "5": "step5_summary",
+    "5": "step5_summary", "6a": "step6a_vix_regime",
 }
 
 

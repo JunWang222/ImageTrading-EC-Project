@@ -11,7 +11,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from cells import grid_cells, probe_cells, indicator_cells, daily_cells, daily_pretrained_cells, \
-    feature_cells, summary_cells  # noqa: E402
+    feature_cells, summary_cells, regime_cells  # noqa: E402
 
 NOTEBOOKS = {
     "Step1a_Daily_JKX_CNN.ipynb": daily_cells,
@@ -23,6 +23,7 @@ NOTEBOOKS = {
     "Step4a_Add_Image_Information.ipynb": indicator_cells,
     "Step4b_Feature_Selection.ipynb": feature_cells,
     "Step5_Summary.ipynb": summary_cells,
+    "Step6a_VIX_Regime.ipynb": regime_cells,
 }
 
 
@@ -42,7 +43,7 @@ def main():
     out = Path(sys.argv[1]) if len(sys.argv) > 1 else HERE
     out.mkdir(parents=True, exist_ok=True)
     for name, make in NOTEBOOKS.items():
-        write(make(), out / name, gpu=not name.startswith(("Step4b", "Step5")))
+        write(make(), out / name, gpu=not name.startswith(("Step4b", "Step5", "Step6a")))
         print("wrote", out / name)
 
 

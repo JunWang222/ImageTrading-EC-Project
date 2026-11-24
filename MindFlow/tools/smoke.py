@@ -18,7 +18,7 @@ STOCKS, DAYS, SLOTS = 30, 280, 78
 ORDER = ["Step1a_Daily_JKX_CNN", "Step1b_Daily_Pretrained", "Step2a_Intraday_Direction_Models",
          "Step2b_Intraday_Direction_Pretrained", "Step3a_Intraday_Volatility_Models",
          "Step3b_Intraday_Volatility_Pretrained", "Step4a_Add_Image_Information", "Step4b_Feature_Selection",
-         "Step5_Summary"]
+         "Step5_Summary", "Step6a_VIX_Regime"]
 
 
 def fake_prepared(folder):
@@ -81,6 +81,13 @@ def main():
     if (here / "code").exists():
         shutil.rmtree(here / "code")
     shutil.copytree(MF / "code", here / "code", ignore=shutil.ignore_patterns("__pycache__"))
+    vix = here / "data" / "VIX_History.csv"                     # synthetic VIX (the notebook downloads Cboe's)
+    if not vix.exists():
+        vix.parent.mkdir(parents=True, exist_ok=True)
+        rng = np.random.default_rng(1)
+        days = pd.bdate_range("2022-11-01", periods=DAYS + 60)
+        close = 18 * np.exp(np.cumsum(rng.normal(0, 0.05, len(days))))
+        pd.DataFrame(dict(DATE=days.strftime("%m/%d/%Y"), OPEN=close, HIGH=close, LOW=close, CLOSE=close)).to_csv(vix, index=False)
 
     import nbformat
     from nbclient import NotebookClient

@@ -17,6 +17,7 @@ FLOW = """
 | **3** | Same models, target = volatility: is there a signal, and who wins? | `Step3a_Intraday_Volatility_Models`, `Step3b_Intraday_Volatility_Pretrained` |
 | **4** | Add information to the picture step by step until the image model reaches HGB; is the image still useful beyond the features; which features matter? | `Step4a_Add_Image_Information`, `Step4b_Feature_Selection` |
 | **5** | One figure and one parameter table over all steps | `Step5_Summary` |
+| **6** | Next questions: does market-regime information (VIX, multi-day realized volatility) help? | `Step6a_VIX_Regime` |
 """
 
 
@@ -337,4 +338,4 @@ print("Parameters:"); display(pd.DataFrame(rows).set_index("model"))
     return c
 
 
-from cells_intraday import grid_cells, probe_cells, indicator_cells, feature_cells, summary_cells  # noqa: E402,F401
+from cells_intraday import grid_cells, probe_cells, indicator_cells, feature_cells, summary_cells, regime_cells  # noqa: E402,F401
