@@ -23,7 +23,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-__version__ = "2026-11-23.1"
+__version__ = "2026-11-24.1"
 
 DRIVE_HOME = "/content/drive/MyDrive/Colab Notebooks/EC/Project/Demo/MindFlow"
 BUNDLE_NAME = "alldata_bundle_v4.zip"

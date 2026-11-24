@@ -35,7 +35,7 @@ from torch.utils.data import DataLoader, Dataset
 from chartcnn import build_split
 from chartcnn.images import point_in_time_window, render_window
 
-__version__ = "2026-11-17.1"
+__version__ = "2026-11-24.1"   # table(): AUC on raw scores (clipping tied unbounded scores)
 LOOKBACK = 78
 SESSION_BARS = 78
 KINDS = {"dir": "dir", "vol": "vol", "xsdir": "xs_dir"}
@@ -524,13 +524,15 @@ def table(results, n_boot=300):
         y = pred.label.to_numpy()
         base = log_loss(y, np.full(len(y), info["prior"]), labels=[0, 1])
         for n in names:
-            p = np.clip(pred[f"score_{n}"].to_numpy(float), 1e-7, 1 - 1e-7)
+            s = pred[f"score_{n}"].to_numpy(float)          # raw score: AUC needs only its order
+            is_prob = bool(np.nanmin(s) >= 0 and np.nanmax(s) <= 1)
+            p = np.clip(s, 1e-7, 1 - 1e-7)                   # clipped copy for log loss only
             lo, hi = np.nanpercentile(boot[n], [2.5, 97.5])
             pinfo = info["probes"].get(n, {})
             rows.append(dict(cell=cname, kind=cell["kind"], minutes=cell["minutes"], model=pretty(n), raw=n,
-                             roc_auc=_auc(y, p), auc_ci_low=lo, auc_ci_high=hi,
-                             log_loss_gain_vs_prior_pct=100 * (base - log_loss(y, p, labels=[0, 1])) / base,
-                             prob_std=float(p.std()), probe_parameters=pinfo.get("parameters", np.nan),
+                             roc_auc=_auc(y, s), auc_ci_low=lo, auc_ci_high=hi,
+                             log_loss_gain_vs_prior_pct=100 * (base - log_loss(y, p, labels=[0, 1])) / base if is_prob else np.nan,
+                             prob_std=float(p.std()) if is_prob else np.nan, probe_parameters=pinfo.get("parameters", np.nan),
                              regularisation=pinfo.get("regularisation", np.nan),
                              best_epoch=pinfo.get("best_epoch", np.nan), rows=len(y),
                              days=pred.decision_date.nunique()))

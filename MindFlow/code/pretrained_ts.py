@@ -22,7 +22,7 @@ import pandas as pd
 
 from tsfm_compare.forecasters import QUANTILES, build
 
-__version__ = "2026-11-23.1"
+__version__ = "2026-11-24.1"
 
 # name -> wrapper spec (tsfm_compare.forecasters.build); `default` = used unless the notebook says otherwise
 MODELS = {
@@ -154,3 +154,52 @@ def attach(pred, keys, quantiles, kind, on, time_col, threshold=None):
         k[f"score_tsfm_{name}"] = scores(q, kind, keys, time_col,
                                          None if threshold is None else keys.security_index.map(threshold).to_numpy())
     return pred.merge(k, on=on, how="inner")
+
+
+def rebuild_tsfm_table(run_dir, reference_dir, n_boot=300, log=print):
+    """Recompute tsfm_table.csv of a finished Step 2b / 3b run from its saved files only (no GPU, no bundle).
+
+    Uses each cell's predictions.parquet + done.json, the reference run's predictions, the cached
+    forecasts in tsfm/<name>/ and train_abs_return_median.csv. Needed for runs whose table was written
+    before frozen_probe 2026-11-24.1, which took the AUC of scores clipped to [0, 1]: the vol scores
+    (|forecast| / median, mostly > 1) and the direction scores (returns, half negative) then tied, so
+    the AUC was pulled towards 0.5 while the bootstrap interval (raw scores) was right.
+    The old table is kept once as tsfm_table_before_2026-11-24.csv. Returns the new table or None."""
+    import frozen_probe as fp
+    run_dir, reference_dir = Path(run_dir), Path(reference_dir) if reference_dir else None
+    cells = sorted(p.parent for p in run_dir.glob("*/done.json"))
+    ts_dirs = sorted(p.parent for p in (run_dir / "tsfm").glob("*/forecast_rows.parquet"))
+    if not cells or not ts_dirs:
+        log(f"{run_dir.name}: nothing to rebuild ({len(cells)} cells, {len(ts_dirs)} forecast folders)")
+        return None
+    joined = {}
+    for c in cells:
+        r = fp.load_cell(c)
+        pred, _ = fp.join_reference(r["predictions"], reference_dir / c.name) if reference_dir else (r["predictions"], None)
+        mpath = c / "train_abs_return_median.csv"
+        median = pd.read_csv(mpath, index_col=0).iloc[:, 0] if mpath.exists() else None
+        joined[c.name] = dict(info=r["info"], predictions=pred, median=median)
+    tables = []
+    for d in ts_dirs:
+        name, keys = d.name, pd.read_parquet(d / "forecast_rows.parquet")
+        res = {}
+        for cname, j in joined.items():
+            cell = j["info"]["cell"]
+            npz = d / f"{name}_h{cell['horizon']}.npz"
+            if not npz.exists():
+                continue
+            pred = attach(j["predictions"], keys, {name: np.load(npz)["q"]}, cell["kind"],
+                          ["security_index", "end_index"], "end_index", j["median"])
+            res[cname] = dict(info=j["info"], predictions=pred)
+        if res:
+            t, _ = fp.table(res, n_boot=n_boot)
+            tables.append(t.assign(rows_of=label(name)))
+            log(f"{run_dir.name}: {name} rescored on {len(res)} cells")
+    if not tables:
+        return None
+    out = pd.concat(tables)
+    old, keep = run_dir / "tsfm_table.csv", run_dir / "tsfm_table_before_2026-11-24.csv"
+    if old.exists() and not keep.exists():
+        keep.write_bytes(old.read_bytes())
+    out.to_csv(old)
+    return out

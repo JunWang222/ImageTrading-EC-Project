@@ -45,7 +45,7 @@ from chartcnn.images import PIXELS_PER_BAR, point_in_time_window, render_window
 from chartcnn.models import ChartCNN
 from chartcnn.training import autocast
 
-__version__ = "2026-11-23.1"   # MindFlow: + tab_only (features without the image)
+__version__ = "2026-11-24.1"   # MindFlow: + tab_only; table() AUC on raw scores
 
 LOOKBACK = 78                       # bars in the drawn window (one session)
 HISTORY = 78                        # extra bars before the window used by MA and EWSD (one more session)
@@ -527,13 +527,15 @@ def table(results, n_boot=300):
         y = pred.label.to_numpy()
         base = log_loss(y, np.full(len(y), info["prior"]), labels=[0, 1])
         for n in names:
-            p = np.clip(pred[f"score_{n}"].to_numpy(float), 1e-7, 1 - 1e-7)
+            s = pred[f"score_{n}"].to_numpy(float)          # raw score: AUC needs only its order
+            is_prob = bool(np.nanmin(s) >= 0 and np.nanmax(s) <= 1)
+            p = np.clip(s, 1e-7, 1 - 1e-7)                   # clipped copy for log loss only
             lo, hi = np.nanpercentile(boot[n], [2.5, 97.5])
             v = n[4:] if n.startswith("ind_") else None
             rows.append(dict(cell=cname, kind=cell["kind"], minutes=cell["minutes"], model=pretty(n), raw=n,
-                             roc_auc=_auc(y, p), auc_ci_low=lo, auc_ci_high=hi,
-                             log_loss_gain_vs_prior_pct=100 * (base - log_loss(y, p, labels=[0, 1])) / base,
-                             prob_std=float(p.std()),
+                             roc_auc=_auc(y, s), auc_ci_low=lo, auc_ci_high=hi,
+                             log_loss_gain_vs_prior_pct=100 * (base - log_loss(y, p, labels=[0, 1])) / base if is_prob else np.nan,
+                             prob_std=float(p.std()) if is_prob else np.nan,
                              parameters=info["parameters"].get(v, {}).get("total", np.nan) if v else np.nan,
                              best_epoch=info["best_epoch"].get(v, np.nan) if v else np.nan,
                              rows=len(y), days=pred.decision_date.nunique()))

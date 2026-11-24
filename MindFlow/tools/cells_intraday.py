@@ -782,6 +782,13 @@ FOUND = {s: mf.latest_run(HERE, s, r) for s, r in RUNS.items()}
 for s, p in FOUND.items():
     print(f"Step {s}: {p if p else '— not run yet'}")
 OUT = mf.run_folder(HERE, "5"); OUT.mkdir(parents=True, exist_ok=True)
+
+# Steps 2b / 3b written before frozen_probe 2026-11-24.1 took the foundation models' AUC from scores clipped
+# to [0, 1] (ties pulled it towards 0.5; the intervals were right). Rescore them once from the saved forecasts.
+import pretrained_ts as pt
+for s, ref in (("2b", "2a"), ("3b", "3a")):
+    if FOUND[s] is not None and not (FOUND[s] / "tsfm_table_before_2026-11-24.csv").exists():
+        pt.rebuild_tsfm_table(FOUND[s], FOUND[ref], n_boot=50 if LOCAL_TEST else 300)
 """), md("## 3. Headline AUCs per step"), code("""
 def family(label):
     l = label.lower()
