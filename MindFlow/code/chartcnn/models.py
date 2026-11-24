@@ -34,9 +34,12 @@ class ResidualBlock(nn.Module):
 
 INPUT_KIND = {"plain": "image", "residual": "image", "series1d": "series",
               "plain_spy": "image", "series1d_spy": "series",   # *_spy: SPY panel / SPY channels added
-              "vit": "image", "vit_spy": "image"}                 # T2T-style ViT (vit.py)
-USES_MARKET = {"plain": False, "residual": False, "series1d": False, "plain_spy": True, "series1d_spy": True,
-               "vit": False, "vit_spy": True}
+              "vit": "image", "vit_spy": "image",                 # T2T-style ViT (vit.py)
+              "plain_vixy": "image", "plain_spy_vixy": "image",   # *_vixy: VIXY panel (intraday VIX proxy)
+              "vit_vixy": "image", "vit_spy_vixy": "image"}
+# market panels under the stock chart, top to bottom (each 234 x 234; series: 5 more channels each)
+PANELS = {a: tuple(p for p in ("spy", "vixy") if f"_{p}" in a) for a in INPUT_KIND}
+USES_MARKET = {a: bool(p) for a, p in PANELS.items()}
 SERIES_CHANNELS = (128, 256, 384)       # wider than the image CNN so parameter counts are close
 
 
@@ -115,7 +118,7 @@ class SeriesCNN1D(nn.Module):
 
     def __init__(self, channels=SERIES_CHANNELS, dropout=0.5, length=78, n_inputs=5):
         super().__init__()
-        self.arch, self.input_shape = ("series1d" if n_inputs == 5 else "series1d_spy"), (n_inputs, length)
+        self.arch, self.input_shape = {5: "series1d", 10: "series1d_spy"}.get(n_inputs, f"series1d_{n_inputs}ch"), (n_inputs, length)
         layers, c_in = [], n_inputs
         for c_out in channels:
             layers += [nn.Conv1d(c_in, c_out, 5, padding=2), nn.BatchNorm1d(c_out), nn.LeakyReLU(0.01)]
@@ -143,23 +146,23 @@ def build_model(settings):
     """plain / residual: image CNN on the stock chart. plain_spy: same CNN with SPY's chart as a
     second input channel. series1d / series1d_spy: 1D CNN on 5 (or 10, with SPY) scaled series."""
     arch = settings.get("arch", "plain")
-    market = USES_MARKET[arch]
+    n = 1 + len(PANELS[arch])                          # stock chart + one panel per market series
+    hw = (234 * n, 234)
     if arch.startswith("vit"):
         from .vit import ChartViT
         return ChartViT(dim=settings.get("vit_dim", 96), depth=settings.get("vit_depth", 8),
                         heads=settings.get("vit_heads", 4), mlp_ratio=settings.get("vit_mlp_ratio", 3.0),
                         drop_path=settings.get("vit_drop_path", 0.1), dropout=settings.get("vit_dropout", 0.1),
                         pool=settings.get("vit_pool", "mean"),
-                        input_hw=(468, 234) if market else (234, 234), arch=arch)
+                        input_hw=hw, arch=arch)
     if INPUT_KIND[arch] == "series":
         return SeriesCNN1D(channels=tuple(settings.get("series_channels", SERIES_CHANNELS)),
-                           dropout=settings["dropout"], n_inputs=10 if market else 5)
-    base = arch.replace("_spy", "")
-    # With SPY the image is twice as tall (stock panel over SPY panel); head_height doubles so
-    # the head keeps separate rows for the two panels after height pooling.
+                           dropout=settings["dropout"], n_inputs=5 * n)
+    base = arch.replace("_spy", "").replace("_vixy", "")
+    # With market panels the image is n times as tall (stock panel over SPY / VIXY panels);
+    # head_height scales so the head keeps separate rows for each panel after height pooling.
     model = ChartCNN(channels=tuple(settings["channels"]), dropout=settings["dropout"],
-                     head_height=settings["head_height"] * (2 if market else 1), arch=base,
-                     input_hw=(468, 234) if market else (234, 234))
+                     head_height=settings["head_height"] * n, arch=base, input_hw=hw)
     model.arch = arch
     return model
 

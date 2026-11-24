@@ -150,21 +150,29 @@ class ChartDataset(Dataset):
     bars drawn with the same geometry on SPY's own window-local axis, so each bar column of the
     SPY panel lines up with the stock's."""
 
-    def __init__(self, prepared, frame, include_volume=True, market=False):
+    PANEL_FILES = {"spy": "market", "vixy": "vixy"}   # <prefix>_features.npy / _multipliers.npy
+
+    def __init__(self, prepared, frame, include_volume=True, market=False, panels=None):
         self.root = Path(prepared)
         self.s = frame.security_index.to_numpy(np.int64)
         self.t = frame.end_index.to_numpy(np.int64)
         self.y = frame.label.to_numpy(np.int64) if "label" in frame else np.zeros(len(frame), np.int64)
         self.include_volume = include_volume
-        self.market = market
-        self._x = self._m = self._mx = self._mm = None      # opened lazily in each DataLoader worker
+        self.panels = tuple(panels) if panels is not None else (("spy",) if market else ())
+        self.market = bool(self.panels)
+        for p in self.panels:
+            assert (self.root / f"{self.PANEL_FILES[p]}_features.npy").exists(), \
+                f"{p} panel files are not in {self.root}: add the {p} panel bundle first"
+        self._x = self._m = None                            # opened lazily in each DataLoader worker
+        self._px = {}
 
     def __len__(self):
         return len(self.s)
 
     def __getstate__(self):                 # do not pickle memmaps into workers
         state = self.__dict__.copy()
-        state["_x"] = state["_m"] = state["_mx"] = state["_mm"] = None
+        state["_x"] = state["_m"] = None
+        state["_px"] = {}
         return state
 
     def window(self, i):
@@ -175,21 +183,27 @@ class ChartDataset(Dataset):
         s, t = self.s[i], self.t[i]
         return point_in_time_window(self._x[s], self._m[s], t, LOOKBACK)
 
+    def panel_window(self, i, panel="spy"):
+        """A market series' (78, 5) window ending at the same slot, adjusted to that slot (point in time)."""
+        if panel not in self._px:
+            prefix = self.PANEL_FILES[panel]
+            self._px[panel] = (np.load(self.root / f"{prefix}_features.npy", mmap_mode="r"),
+                               np.load(self.root / f"{prefix}_multipliers.npy", mmap_mode="r"))
+        x, m = self._px[panel]
+        return point_in_time_window(x, m, self.t[i], LOOKBACK)
+
     def market_window(self, i):
         """SPY's (78, 5) window ending at the same slot, adjusted to that slot (point in time)."""
-        if self._mx is None:
-            self._mx = np.load(self.root / "market_features.npy", mmap_mode="r")
-            self._mm = np.load(self.root / "market_multipliers.npy", mmap_mode="r")
-        return point_in_time_window(self._mx, self._mm, self.t[i], LOOKBACK)
+        return self.panel_window(i, "spy")
 
     def image(self, i):
         return render_window(self.window(i), self.include_volume)
 
     def images(self, i):
-        """uint8 image: the stock chart (234 x 234), with SPY's panel stacked below if market=True."""
+        """uint8 image: the stock chart (234 x 234), with one panel per market series stacked below."""
         image = self.image(i)
-        if self.market:
-            image = np.vstack([image, render_window(self.market_window(i), self.include_volume)])
+        if self.panels:
+            image = np.vstack([image] + [render_window(self.panel_window(i, p), self.include_volume) for p in self.panels])
         return image
 
     def __getitem__(self, i):
@@ -203,13 +217,13 @@ class SeriesDataset(ChartDataset):
 
     def __getitem__(self, i):
         x = scale_like_image(self.window(i))
-        if self.market:                     # 5 more channels: SPY scaled the same way, own axis
-            x = np.concatenate([x, scale_like_image(self.market_window(i))])
+        for p in self.panels:               # 5 more channels per market series, scaled the same way
+            x = np.concatenate([x, scale_like_image(self.panel_window(i, p))])
         return torch.from_numpy(x), int(self.y[i]), int(i)
 
 
 def make_dataset(prepared, frame, arch):
     """The dataset an architecture expects: chart images or OHLCV sequences, with or without SPY."""
-    from .models import INPUT_KIND, USES_MARKET
+    from .models import INPUT_KIND, PANELS
     cls = SeriesDataset if INPUT_KIND[arch] == "series" else ChartDataset
-    return cls(prepared, frame, market=USES_MARKET[arch])
+    return cls(prepared, frame, panels=PANELS[arch])

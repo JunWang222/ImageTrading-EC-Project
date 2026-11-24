@@ -76,6 +76,26 @@ def stage_bundle(bundle, local_root=None, verify=True):
     return stage / "prepared"
 
 
+def stage_panels(home, prepared, pattern="*_panel_v4.zip"):
+    """Unpack add-on market panels (tools/build_panel_bundle.py, e.g. vixy_panel_v4.zip) found in `home`
+    into prepared/, checking every file's sha256. Returns the names of the panels added."""
+    names = []
+    for z in sorted(Path(home).glob(pattern)):
+        with zipfile.ZipFile(z) as f:
+            man = json.loads(f.read("panel_manifest.json"))
+            for rel, d in man["files"].items():
+                target = Path(prepared).parent / rel
+                assert target.resolve().is_relative_to(Path(prepared).parent.resolve()), rel
+                data = f.read(rel)
+                assert hashlib.sha256(data).hexdigest() == d["sha256"], f"checksum mismatch: {rel}"
+                target.write_bytes(data)
+        info = json.loads((Path(prepared) / f"{man['name']}_panel.json").read_text())
+        print(f"panel {man['name']} from {z.name}: {info['observed']:,} observed bars, "
+              f"{info['filled_share']:.2%} of full-session slots filled flat")
+        names.append(man["name"])
+    return names
+
+
 def run_folder(home, step):
     return Path(home) / "runs" / STEP_FOLDERS[step]
 

@@ -64,6 +64,11 @@ and `RETRAIN_ARCHS = ["vit", "vit_spy"]`, keep every other setting, and Run all.
 exactly the same rows (checked); HGB, rules and the CNNs are kept, the old networks are moved to
 `<cell>/<arch>_before_<version>/`, and the tables below are rebuilt with the new scores.
 
+**To add the VIXY panel (intraday VIX proxy) to a finished run**: upload `vixy_panel_v4.zip` (built on the Mac with
+`MindFlow/tools/build_panel_bundle.py`) next to the bundle in `Demo/MindFlow`, set `RUN_ID` to that run and
+`RETRAIN_ARCHS = VIXY_ARCHS`, and Run all. The networks in `VIXY_ARCHS` (default: CNN and ViT with SPY + VIXY panels, three
+stacked charts, 702 × 234) are trained on the same rows and added to the tables, next to their `_spy` versions.
+
 **`QUICK = True`** is a small first pass (40,000 training windows, 3 epochs, every 5th validation day) to check that
 everything runs; its numbers are rough.
 
@@ -95,8 +100,12 @@ KINDS = {kinds}
 STRIDE = 12                                       # one sample per stock per hour, for every horizon
 ARCHS = {ALL_ARCHS!r}
 RETRAIN_ARCHS = []                                # e.g. ["vit", "vit_spy"] with an old RUN_ID: retrain only these
+VIXY_ARCHS = ["plain_spy_vixy", "vit_spy_vixy"]   # also possible: "plain_vixy", "vit_vixy"
 if SMOKE:
     ARCHS = ["plain", "plain_spy", "series1d", "vit"]
+    VIXY_ARCHS = ["plain_spy_vixy", "vit_vixy"]
+if "vixy" in PANELS_ADDED:                        # vixy_panel_v4.zip is in Demo/MindFlow
+    ARCHS = ARCHS + [a for a in VIXY_ARCHS if a not in ARCHS]
 CELLS = grid.grid_cells(HORIZONS, KINDS, STRIDE)
 RUN_ID, RUN_DRIVE, RESUME = mf.new_run(HERE, "{step}", RUN_ID, "grid", LOCAL_TEST)
 RUN_LOCAL = LOCAL_ROOT / "work" / RUN_DRIVE.parent.name / RUN_ID

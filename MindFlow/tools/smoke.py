@@ -81,6 +81,29 @@ def main():
     if (here / "code").exists():
         shutil.rmtree(here / "code")
     shutil.copytree(MF / "code", here / "code", ignore=shutil.ignore_patterns("__pycache__"))
+    panel = here / "vixy_panel_v4.zip"                     # synthetic VIXY add-on panel (a few missing bars filled)
+    if not panel.exists():
+        sys.path.insert(0, str(MF / "tools"))
+        from build_panel_bundle import fill_missing
+        rng = np.random.default_rng(2)
+        T = DAYS * SLOTS
+        c = 20 * np.exp(np.cumsum(rng.normal(0, 2e-3, T)))
+        x = np.stack([c, c * 1.001, c * 0.999, c, rng.integers(100, 1000, T)], 1)
+        ok = rng.random(T) > 0.01
+        x[~ok] = np.nan
+        xf, mf_, filled = fill_missing(x, np.ones((T, 2)), ok, np.ones(T, bool))
+        files = {"prepared/vixy_features.npy": xf.astype(np.float32), "prepared/vixy_multipliers.npy": mf_.astype(np.float32),
+                 "prepared/vixy_valid.npy": ok}
+        import io
+        blobs = {}
+        for rel, arr in files.items():
+            b = io.BytesIO(); np.save(b, arr); blobs[rel] = b.getvalue()
+        blobs["prepared/vixy_panel.json"] = json.dumps(dict(observed=int(ok.sum()), filled_share=filled / T)).encode()
+        with zipfile.ZipFile(panel, "w") as z:
+            for rel, data in blobs.items():
+                z.writestr(rel, data)
+            z.writestr("panel_manifest.json", json.dumps(dict(name="vixy", files={
+                rel: dict(sha256=hashlib.sha256(d).hexdigest()) for rel, d in blobs.items()})))
     vix = here / "data" / "VIX_History.csv"                     # synthetic VIX (the notebook downloads Cboe's)
     if not vix.exists():
         vix.parent.mkdir(parents=True, exist_ok=True)

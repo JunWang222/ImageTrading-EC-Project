@@ -67,6 +67,7 @@ assert (CODE / "mindflow.py").is_file(), f"Put the code/ folder in {{HERE}}"
 sys.path[:0] = [str(CODE)]
 import mindflow as mf
 PREPARED = mf.stage_bundle(HERE / mf.BUNDLE_NAME, LOCAL_ROOT)
+PANELS_ADDED = mf.stage_panels(HERE, PREPARED)          # e.g. vixy_panel_v4.zip, if uploaded
 import numpy as np, pandas as pd, torch
 from IPython.display import display, Markdown
 {imports.strip()}

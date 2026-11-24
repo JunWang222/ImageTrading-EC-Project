@@ -37,7 +37,9 @@ BAR_MINUTES = 5
 PROB_MODELS = ("training_prior", "hgb_hand_features", "hgb_hand_spy")      # plus every cnn_<arch>
 ARCH_LABEL = {"plain": "image CNN", "plain_spy": "image CNN + SPY panel", "series1d": "1D CNN",
               "series1d_spy": "1D CNN + SPY", "residual": "residual image CNN",
-              "vit": "image ViT (T2T-style)", "vit_spy": "image ViT + SPY panel"}
+              "vit": "image ViT (T2T-style)", "vit_spy": "image ViT + SPY panel",
+              "plain_vixy": "image CNN + VIXY panel", "plain_spy_vixy": "image CNN + SPY + VIXY panels",
+              "vit_vixy": "image ViT + VIXY panel", "vit_spy_vixy": "image ViT + SPY + VIXY panels"}
 
 
 def arch_settings(settings, arch):
@@ -395,7 +397,12 @@ def takeaways(table, boots):
                          ("CNN (series1d_spy)", "CNN (series1d)", "1D CNN with SPY − without"),
                          ("ViT (vit)", "CNN (plain)", "image ViT − image CNN"),
                          ("CNN (residual)", "CNN (plain)", "residual image CNN − plain image CNN"),
-                         ("ViT (vit_spy)", "ViT (vit)", "image ViT with SPY panel − without")):
+                         ("ViT (vit_spy)", "ViT (vit)", "image ViT with SPY panel − without"),
+                         ("CNN (plain_vixy)", "CNN (plain)", "image CNN with VIXY panel − without"),
+                         ("CNN (plain_spy_vixy)", "CNN (plain_spy)", "image CNN + SPY with VIXY panel − without"),
+                         ("ViT (vit_vixy)", "ViT (vit)", "image ViT with VIXY panel − without"),
+                         ("ViT (vit_spy_vixy)", "ViT (vit_spy)", "image ViT + SPY with VIXY panel − without"),
+                         ("CNN (plain_spy_vixy)", "HGB hand + SPY", "image CNN + SPY + VIXY − HGB hand + SPY")):
         wins = losses = ties = 0
         for cell, boot in boots.items():
             ca, cb = _raw_name(a), _raw_name(b_)
