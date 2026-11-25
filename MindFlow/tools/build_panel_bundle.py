@@ -2,7 +2,7 @@
 """Package one more market series (e.g. VIXY) as a small add-on to the MindFlow v4 bundle.
 
     python MindFlow/tools/build_panel_bundle.py \\
-        --prepared "$V4/03_prepared" --market "$V4/02_adjusted_vixy" --name vixy \\
+        --prepared "$V4/03_prepared/prepared" --market "$V4/02_adjusted_vixy" --name vixy \\
         --output   "$V4/04_bundle/vixy_panel_v4.zip"
 
 Upload the zip next to alldata_bundle_v4.zip in Drive Demo/MindFlow/. The notebooks unpack it into the
