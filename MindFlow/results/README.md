@@ -17,5 +17,7 @@ Step 5 summarised.
 | 4b feature selection | `step4b_feature_selection/features_20261123_083258` | 3-feature subset worse than all 38 on 2023, so all 38 kept |
 | 5 summary | `step5_summary` | one figure and parameter table over steps 1-4 |
 | 6a regime | `step6a_vix_regime/regime_20261124_182927` | daily VIX adds nothing; multi-day realized vol +0.0025 (significant) |
+| 6b final model | `step6b_final_model/final_20261125_222625` | final CNN `ewsd_tab_rv` (783,556 params) 0.6881 / 0.6760 (5 / 60 min) vs HGB 43 0.6894 / 0.6780; test 2024-25: 0.6974 / 0.6827 vs 0.6983 / 0.6850 (tied at 5 min, -0.002 at 60 min); image adds +0.001 over the same numbers on test |
+| 6c volatility use | `step6c_volatility_use/voluse_20261126_045556` | IC vs next abs. return 0.13 (ICIR 1.5, test, 5 min); low-minus-high volatility long-short loses (no low-vol anomaly intraday); volatility targeting halves the variability of daily risk |
 
-Steps 6b (final model) and 7a (efficient computing) are added when their runs finish.
+Step 6b and 6c include the held-out test years 2024-2025 (scored once, after the final model was chosen on 2023). Steps 7a (efficient computing) and 7b (distillation) are added when their runs finish.
