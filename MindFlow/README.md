@@ -15,6 +15,13 @@ identical rows for every model. Every model reports its parameter count (HGB: tr
 | 4a | Add information to the picture until the image model reaches HGB; is the image still useful? | `Step4a_Add_Image_Information` | ladder: chart → + SPY panel → + fixed-scale EW volatility band → + MA → + 38 numbers; control: the 38 numbers alone (MLP) |
 | 4b | Which of the 38 hand features matter? | `Step4b_Feature_Selection` | HGB: permutation importance, group drop / keep-only, forward selection (chosen on 2022, confirmed on 2023) |
 | 5 | One figure, one parameter table | `Step5_Summary` | reads every step's newest run |
+| 6a | Does market-regime information (VIX, multi-day realized vol) help HGB? | `Step6a_VIX_Regime` | HGB with and without regime features, same rows |
+| 6b | Final model and the held-out test | `Step6b_Final_Model` | hybrid CNN (chart + EWSD band + 43 numbers) vs HGB 43, MLP 43; test 2024–2025 once |
+| 6c | What is the volatility forecast worth? | `Step6c_Volatility_Use` | IC / ICIR, low-minus-high volatility long-short, volatility sizing |
+| 6d | Can a model that sees only pictures reach the final model if the numbers are drawn into the picture? | `Step6d_Pure_Image` | CNN on chart + EWSD + fixed-scale strips (time of day, SPY volatility, volume, multi-day RV), with and without all 43 numbers drawn as bars; no numbers input; paired with 6b and 4a |
+| 7b | Can a much smaller model do as well? | `Step7b_Distillation` | small CNN, half-height CNN and numbers-only MLP students, trained on labels or distilled from the 6b final CNN; AUC, parameters, GPU speed |
+| 7b+ | The same for the pure-image model | `Step7b_plus_Pure_Image_Distillation` | small, half-height and tiny pure-image CNN students distilled from the 6d `pure_all` CNN |
+| 8a | What did the pure-image CNN learn? | `Step8a_Inside_Pure_CNN` | Fixed Step 6d models on 2023 pictures: region / time / number-strip occlusion, activation × weight and channel ablation, Grad-CAM and gradient × input, linear probing of the 43 numbers; no training |
 
 ## Running on Colab
 
@@ -35,6 +42,10 @@ identical rows for every model. Every model reports its parameter count (HGB: tr
 - `pretrained_ts.py`, `tsfm_compare/` time-series foundation models (zero-shot), contexts and scores
 - `indicator_cnn.py` chart variants (MA, EW volatility band), hybrid CNN + feature MLP, the features-only control
 - `feature_select.py` HGB feature selection
+- `pure_image.py` pure-image pictures (the numbers drawn on fixed scales) and their CNN (Step 6d)
+- `distill.py`, `pure_distill.py` knowledge distillation into small students (Steps 7b, 7b+)
+- `efficiency.py` parameter size and GPU speed measurement used by Steps 7b and 7b+
+- `inside_cnn.py` what the pure-image CNN uses: occlusion, activation × weight, saliency, probing (Step 8a)
 - `mindflow.py` shared setup, run discovery, parameter tables, summary figure
 
 ## Repository QA
