@@ -82,11 +82,26 @@ def answer_ids(tokenizer):
     return [tokens[0] for tokens in ids]
 
 
-@torch.inference_mode()
-def score(model, processor, image, prompt, ids):
+def model_inputs(processor, image, prompt, device):
     messages = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": prompt}]}]
     text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    batch = processor(text=[text], images=[image], return_tensors="pt").to(model.device)
+    return processor(text=[text], images=[image], return_tensors="pt").to(device)
+
+
+def make_prompt(style, features):
+    prompt = LEGEND[style]
+    if style == "6b":
+        values = ", ".join(
+            f"{name}={value:.8g}" if np.isfinite(value) else f"{name}=missing"
+            for name, value in features.items()
+        )
+        prompt += "\nHistorical features: " + values
+    return prompt + "\n" + QUESTION
+
+
+@torch.inference_mode()
+def score(model, processor, image, prompt, ids):
+    batch = model_inputs(processor, image, prompt, model.device)
     logits = model(**batch, use_cache=False).logits[0, -1].float()
     yes, no = logits[ids].tolist()
     probability = float(torch.sigmoid(torch.tensor(yes - no)))
@@ -147,14 +162,7 @@ def run(prepared, bundle, output_root, n_rows=32, scale_rows=2000, seed=69, revi
         torch.cuda.reset_peak_memory_stats()
         scores = []
         for i in range(len(rows)):
-            prompt = LEGEND[style]
-            if style == "6b":
-                values = ", ".join(
-                    f"{name}={value:.8g}" if np.isfinite(value) else f"{name}=missing"
-                    for name, value in numbers.iloc[i].items()
-                )
-                prompt += "\nHistorical features: " + values
-            prompt += "\n" + QUESTION
+            prompt = make_prompt(style, numbers.iloc[i])
             image = Image.fromarray(chart.image(i)).convert("RGB")
             yes, no, prob, grid = score(model, processor, image, prompt, ids)
             scores.append((yes, no, prob, *grid))
@@ -194,8 +202,14 @@ def main():
     parser.add_argument("--rows", type=int, default=32)
     parser.add_argument("--scale-rows", type=int, default=2000)
     parser.add_argument("--revision", default="main")
+    parser.add_argument("--probe-reference", type=Path, help="Completed zero-shot run directory")
+    parser.add_argument("--train-rows", type=int, default=2000)
     args = parser.parse_args()
-    run(args.prepared, args.bundle, args.output, args.rows, args.scale_rows, revision=args.revision)
+    if args.probe_reference:
+        from qwen_probe import run_probe
+        run_probe(args.prepared, args.bundle, args.output, args.probe_reference, args.train_rows)
+    else:
+        run(args.prepared, args.bundle, args.output, args.rows, args.scale_rows, revision=args.revision)
 
 
 if __name__ == "__main__":
