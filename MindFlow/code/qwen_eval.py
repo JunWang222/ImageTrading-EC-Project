@@ -111,7 +111,7 @@ def run(prepared, bundle, output_root, n_rows=32, scale_rows=2000, seed=69, revi
     output = output_root / run_id
     output.mkdir(parents=True)
     print("Loading Qwen on", torch.cuda.get_device_name(0), flush=True)
-    processor = AutoProcessor.from_pretrained(MODEL_ID, revision=revision)
+    processor = AutoProcessor.from_pretrained(MODEL_ID, revision=revision, use_fast=True)
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         MODEL_ID, revision=revision, torch_dtype=torch.bfloat16,
         attn_implementation="sdpa",
@@ -132,6 +132,7 @@ def run(prepared, bundle, output_root, n_rows=32, scale_rows=2000, seed=69, revi
         "target": "vol_h1", "stride": 12, "embargo_sessions": 2, "halflife": 39,
         "min_bars": 60, "question": QUESTION, "legend": LEGEND, "answer_token_ids": ids,
         "feature_order": numbers.columns.tolist(),
+        "image_processor_class": type(processor.image_processor).__name__,
         "image_processor": processor.image_processor.to_dict(),
     }
     (output / "settings.json").write_text(json.dumps(settings, indent=2) + "\n")
