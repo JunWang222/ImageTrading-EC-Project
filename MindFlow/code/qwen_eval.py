@@ -166,7 +166,7 @@ def evaluation_prompt(style, features, shared=False):
 @torch.inference_mode()
 def score(model, processor, image, prompt, ids):
     batch = model_inputs(processor, image, prompt, model.device)
-    logits = model(**batch, use_cache=False).logits[0, -1].float()
+    logits = model(**batch, use_cache=False, logits_to_keep=1).logits[0, -1].float()
     yes, no = logits[ids].tolist()
     probability = float(torch.sigmoid(torch.tensor(yes - no)))
     return yes, no, probability, batch["image_grid_thw"][0].tolist()
@@ -177,8 +177,45 @@ def sha256(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+def score_chunks(output, style, chart, numbers, model, processor, ids, shared, rows):
+    cache = output / f"{style}_scores"
+    cache.mkdir(exist_ok=True)
+    chunks = []
+    seconds, peak = 0.0, 0.0
+    columns = ["logit_yes", "logit_no", "prob_yes", "grid_t", "grid_h", "grid_w"]
+    keys = ["security_index", "end_index", "label"]
+    for start in range(0, len(rows), 128):
+        stop = min(start + 128, len(rows))
+        path = cache / f"{start:07d}.parquet"
+        chunk_keys = rows.iloc[start:stop][keys].reset_index(drop=True)
+        if path.exists():
+            frame = pd.read_parquet(path)
+            pd.testing.assert_frame_equal(frame[keys], chunk_keys, check_dtype=False)
+            print(f"{style}: reused scores through {stop:,}/{len(rows):,}", flush=True)
+        else:
+            tick = time.perf_counter()
+            torch.cuda.reset_peak_memory_stats()
+            scores = []
+            for i in range(start, stop):
+                prompt = evaluation_prompt(style, numbers.iloc[i], shared=shared)
+                image = Image.fromarray(chart.image(i)).convert("RGB")
+                yes, no, prob, grid = score(model, processor, image, prompt, ids)
+                scores.append((yes, no, prob, *grid))
+            frame = pd.concat([chunk_keys, pd.DataFrame(scores, columns=columns)], axis=1)
+            frame["chunk_seconds"] = time.perf_counter() - tick
+            frame["chunk_peak_gib"] = torch.cuda.max_memory_allocated() / 2**30
+            tmp = path.with_suffix(".tmp")
+            frame.to_parquet(tmp, index=False)
+            tmp.replace(path)
+            print(f"{style}: saved {stop:,}/{len(rows):,} scores", flush=True)
+        chunks.append(frame[columns])
+        seconds += float(frame.chunk_seconds.iloc[0])
+        peak = max(peak, float(frame.chunk_peak_gib.iloc[0]))
+    return pd.concat(chunks, ignore_index=True), seconds, peak
+
+
 def run(prepared, bundle, output_root, n_rows=32, scale_rows=2000, seed=69, revision="main",
-        shared_keys=None, references=None):
+        shared_keys=None, references=None, run_id=None):
     import transformers
     from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
@@ -189,13 +226,14 @@ def run(prepared, bundle, output_root, n_rows=32, scale_rows=2000, seed=69, revi
     if (shared_keys is None) != (references is None):
         raise ValueError("Supply both shared validation keys and CNN references")
     repo = Path(__file__).resolve().parents[2]
-    run_id = datetime.now(timezone.utc).strftime("qwen_zero_shot_%Y%m%d_%H%M%S_%f")
+    if run_id is not None and (Path(run_id).name != run_id or run_id in ("", ".", "..")):
+        raise ValueError("Run ID must be a single directory name")
+    run_id = run_id or datetime.now(timezone.utc).strftime("qwen_zero_shot_%Y%m%d_%H%M%S_%f")
     output = output_root / run_id
-    output.mkdir(parents=True)
     print("Loading Qwen on", torch.cuda.get_device_name(0), flush=True)
     processor = AutoProcessor.from_pretrained(MODEL_ID, revision=revision, use_fast=True)
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-        MODEL_ID, revision=revision, torch_dtype=torch.bfloat16,
+        MODEL_ID, revision=revision, dtype=torch.bfloat16,
         attn_implementation="sdpa",
     ).to("cuda").eval()
     ids = answer_ids(processor.tokenizer)
@@ -227,39 +265,37 @@ def run(prepared, bundle, output_root, n_rows=32, scale_rows=2000, seed=69, revi
         "image_processor_class": type(processor.image_processor).__name__,
         "image_processor": processor.image_processor.to_dict(),
     }
-    (output / "settings.json").write_text(json.dumps(settings, indent=2) + "\n")
-    (output / "preprocessing.json").write_text(json.dumps(prep, indent=2) + "\n")
-    pd.DataFrame([{"model": MODEL_ID, "total": sum(p.numel() for p in model.parameters()),
-                   "trainable": 0}]).to_csv(output / "network_parameters.csv", index=False)
     columns = ["security_index", "end_index", "decision_date", "bar_of_day",
                "label", "abs_return", "train_abs_return_median"]
     if shared_keys is not None:
         columns += ["6b_cnn_probability", "6d_cnn_probability"]
-    pred = rows[columns].copy()
+    pred = rows[columns].reset_index(drop=True)
+    signature = {k: v for k, v in settings.items() if k not in ("gpu", "code_dirty")}
+    signature.update(
+        row_hash=hashlib.sha256(pd.util.hash_pandas_object(pred, index=False).to_numpy().tobytes()).hexdigest(),
+        preprocessing_hash=hashlib.sha256(json.dumps(prep, sort_keys=True).encode()).hexdigest(),
+        chunk_size=128,
+    )
+    from qwen_probe import check_signature
+    check_signature(output, json.loads(json.dumps(signature)))
+    (output / "settings.json").write_text(json.dumps(settings, indent=2) + "\n")
+    (output / "preprocessing.json").write_text(json.dumps(prep, indent=2) + "\n")
+    pd.DataFrame([{"model": MODEL_ID, "total": sum(p.numel() for p in model.parameters()),
+                   "trainable": 0}]).to_csv(output / "network_parameters.csv", index=False)
+    print(f"Saving zero-shot scores to {output}", flush=True)
     summaries = []
     for style, chart in charts.items():
-        start = time.perf_counter()
-        torch.cuda.reset_peak_memory_stats()
-        scores = []
-        for i in range(len(rows)):
-            prompt = evaluation_prompt(style, numbers.iloc[i], shared=shared_keys is not None)
-            image = Image.fromarray(chart.image(i)).convert("RGB")
-            yes, no, prob, grid = score(model, processor, image, prompt, ids)
-            scores.append((yes, no, prob, *grid))
-            if i == 0 or (i + 1) % 8 == 0:
-                print(f"{style}: {i + 1}/{len(rows)} scored, source image={image.size}, grid={grid}", flush=True)
-        score_frame = pd.DataFrame(scores, columns=[
-            "logit_yes", "logit_no", "prob_yes", "grid_t", "grid_h", "grid_w"])
+        score_frame, seconds, peak = score_chunks(
+            output, style, chart, numbers, model, processor, ids, shared_keys is not None, pred,
+        )
         for column in score_frame:
             pred[f"{style}_{column}"] = score_frame[column]
-        pred.to_parquet(output / "predictions.parquet", index=False)
         y, p = pred.label, score_frame.prob_yes
         summaries.append({
             "input_style": style, "mode": "zero_shot", "rows": len(y),
             "auc": roc_auc_score(y, p) if y.nunique() == 2 else np.nan,
             "log_loss": log_loss(y, p, labels=[0, 1]), "brier": brier_score_loss(y, p),
-            "seconds": time.perf_counter() - start,
-            "peak_cuda_allocated_gib": torch.cuda.max_memory_allocated() / 2**30,
+            "seconds": seconds, "peak_cuda_allocated_gib": peak,
         })
         if shared_keys is not None:
             p = pred[f"{style}_cnn_probability"]
@@ -269,6 +305,9 @@ def run(prepared, bundle, output_root, n_rows=32, scale_rows=2000, seed=69, revi
                 "log_loss": log_loss(y, p, labels=[0, 1]), "brier": brier_score_loss(y, p),
             })
     table = pd.DataFrame(summaries)
+    tmp = output / "predictions.tmp"
+    pred.to_parquet(tmp, index=False)
+    tmp.replace(output / "predictions.parquet")
     table.to_csv(output / "summary.csv", index=False)
     (output / "takeaways.md").write_text(
         "# Qwen zero-shot pilot\n\n"
@@ -299,7 +338,7 @@ def main():
     parser.add_argument("--cnn-references", type=Path, help="Directory containing the original 6b and 6d runs")
     parser.add_argument("--train-rows", type=int, help="Optional probe training cap (pilot default: 2000)")
     parser.add_argument("--shared-train", type=Path, help="Canonical training keys for shared probe")
-    parser.add_argument("--run-id", help="Stable directory name for restarting probe or LoRA")
+    parser.add_argument("--run-id", help="Stable directory name for restarting a run")
     parser.add_argument("--lora-style", choices=("6b", "6d"), default="6d")
     parser.add_argument("--lora-epochs", type=int, default=3)
     parser.add_argument("--lora-max-train", type=int, help="Limit training rows for a smoke test")
@@ -314,7 +353,7 @@ def main():
                   shared_train=args.shared_train, run_id=args.run_id)
     else:
         run(args.prepared, args.bundle, args.output, args.rows, args.scale_rows, revision=args.revision,
-            shared_keys=args.shared_validation, references=args.cnn_references)
+            shared_keys=args.shared_validation, references=args.cnn_references, run_id=args.run_id)
 
 
 if __name__ == "__main__":
