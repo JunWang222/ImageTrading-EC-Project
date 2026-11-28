@@ -14,11 +14,77 @@ from sklearn.metrics import brier_score_loss, log_loss, roc_auc_score
 from torch import nn
 
 from qwen_eval import (
-    LEGEND, MODEL_ID, QUESTION, Store, fm, ic, make_prompt, model_inputs, pi, regime, sha256,
+    LEGEND, MODEL_ID, QUESTION, Store, evaluation_prompt, fm, ic, model_inputs, pi, regime, sha256,
 )
 
 
 KEYS = ["security_index", "end_index"]
+
+
+def run_directory(root, run_id, prefix):
+    if run_id is not None and (Path(run_id).name != run_id or run_id in ("", ".", "..")):
+        raise ValueError("Run ID must be a single directory name")
+    return root / (run_id or datetime.now(timezone.utc).strftime(prefix + "_%Y%m%d_%H%M%S_%f"))
+
+
+def check_signature(folder, signature):
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / "run_signature.json"
+    if path.exists() and json.loads(path.read_text()) != signature:
+        raise ValueError(f"{folder} belongs to another configuration; choose a new run ID")
+    if not path.exists() and any(folder.iterdir()):
+        raise ValueError(f"{folder} is nonempty and has no Qwen run signature")
+    temp = path.with_suffix(".tmp")
+    temp.write_text(json.dumps(signature, indent=2) + "\n")
+    temp.replace(path)
+
+
+def atomic_save(state, path):
+    temp = path.with_suffix(".tmp")
+    torch.save(state, temp)
+    temp.replace(path)
+
+
+def build_shared_inputs(prepared, reference, settings, prep, shared_train, limit=None):
+    fm.register()
+    b = Path(settings["cnn_references"]) / "step6b_final_model/final_20261125_222625"
+    config = json.loads((b / "settings.json").read_text())
+    cell = next(c for c in config["cells"] if c["name"] == "vol_h1")
+    pre = json.loads((b / "preprocessing.json").read_text())
+    final = json.loads((b / "final_choice.json").read_text())["final"]
+    if pre["tab"] != prep["tab"] or pre["ewsd_log_scale"] != prep["ewsd"]:
+        raise ValueError("Original 6b preprocessing differs from the zero-shot reference")
+    store = Store(prepared)
+    original, median = ic.cell_rows(store, cell, "train", pd.read_parquet(b / "windows_train.parquet"))
+    columns = KEYS + ["decision_date", "label"]
+    train = pd.read_parquet(shared_train, columns=columns)
+    for actual, expected, split in (
+        (train, original, "train"),
+        (reference, ic.cell_rows(store, cell, "validation", reference, median)[0], "validation"),
+    ):
+        pd.testing.assert_frame_equal(
+            actual[columns].sort_values(KEYS).reset_index(drop=True),
+            expected[columns].sort_values(KEYS).reset_index(drop=True),
+            check_dtype=False, obj=f"shared {split} rows",
+        )
+    if limit is not None:
+        train = train.sample(n=min(limit, len(train)), random_state=settings["seed"])
+    scaler = fm.scaler_from_state(prep["tab"])
+    rv = regime.rv_tables(store, min_bars=config["settings"]["min_bars"])
+    result = {}
+    for split, rows in (("train", train), ("validation", reference)):
+        rows = rows.reset_index(drop=True)
+        _, raw = fm.numbers(store, rows, rv)
+        numbers = pd.DataFrame(scaler(raw), columns=scaler.columns)
+        if numbers.columns.tolist() != settings["feature_order"] or rows.label.nunique() != 2:
+            raise ValueError(f"Invalid feature ordering or missing class in shared {split}")
+        half = pre["halflife"]
+        result[split] = (rows, numbers, {
+            "6b": ic.Charts(prepared, rows, final, prep["ewsd"], half),
+            "6d": pi.PureCharts(prepared, rows, "pure_all", prep["strips"], half,
+                                 store.market_close, pi.log_rv(raw), numbers.to_numpy()),
+        })
+    return result
 
 
 def build_inputs(prepared, reference, settings, prep, train_rows):
@@ -64,20 +130,34 @@ def build_inputs(prepared, reference, settings, prep, train_rows):
 
 
 @torch.no_grad()
-def embed(model, processor, style, data, split, path):
+def embed(model, processor, style, data, split, folder, shared):
     rows, numbers, charts = data
-    vectors = []
-    for i in range(len(rows)):
-        image = Image.fromarray(charts[style].image(i)).convert("RGB")
-        batch = model_inputs(processor, image, make_prompt(style, numbers.iloc[i]), model.device)
-        hidden = model.model(**batch, use_cache=False, return_dict=True).last_hidden_state
-        vectors.append(hidden[0, -1].float().cpu().clone())
-        if (i + 1) % 100 == 0 or i + 1 == len(rows):
-            print(f"{style} {split}: {i + 1}/{len(rows)} embeddings", flush=True)
-    embeddings = torch.stack(vectors)
-    torch.save({"embeddings": embeddings, "keys": rows[KEYS].to_numpy().tolist(),
-                "labels": rows.label.tolist()}, path)
-    return embeddings
+    cache = folder / f"{split}_chunks"
+    cache.mkdir(exist_ok=True)
+    chunks = []
+    for start in range(0, len(rows), 128):
+        stop = min(start + 128, len(rows))
+        path = cache / f"{start:07d}.pt"
+        keys = rows.iloc[start:stop][KEYS].to_numpy().tolist()
+        labels = rows.label.iloc[start:stop].tolist()
+        if path.exists():
+            saved = torch.load(path, map_location="cpu", weights_only=True)
+            if saved["keys"] != keys or saved["labels"] != labels:
+                raise ValueError(f"Embedding cache mismatch at {path}")
+            chunks.append(saved["embeddings"])
+            continue
+        vectors = []
+        for i in range(start, stop):
+            image = Image.fromarray(charts[style].image(i)).convert("RGB")
+            prompt = evaluation_prompt(style, numbers.iloc[i], shared)
+            batch = model_inputs(processor, image, prompt, model.device)
+            hidden = model.model(**batch, use_cache=False, return_dict=True).last_hidden_state
+            vectors.append(hidden[0, -1].float().cpu().clone())
+        embeddings = torch.stack(vectors)
+        atomic_save(dict(embeddings=embeddings, keys=keys, labels=labels), path)
+        chunks.append(embeddings)
+        print(f"{style} {split}: {stop}/{len(rows)} embeddings", flush=True)
+    return torch.cat(chunks)
 
 
 def fit_probe(train, train_y, valid, valid_y, folder, seed, epochs, lr):
@@ -119,15 +199,20 @@ def fit_probe(train, train_y, valid, valid_y, folder, seed, epochs, lr):
     return best_logits, sum(p.numel() for p in head.parameters()), best
 
 
-def run_probe(prepared, bundle, output_root, reference, train_rows=2000, epochs=12, lr=1e-3):
+def run_probe(prepared, bundle, output_root, reference, train_rows=2000, epochs=12, lr=1e-3,
+              shared_train=None, run_id=None):
     import transformers
     from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
-    if train_rows < 2 or epochs < 1 or lr <= 0 or not torch.cuda.is_available():
+    if (train_rows is not None and train_rows < 2) or epochs < 1 or lr <= 0 or not torch.cuda.is_available():
         raise ValueError("Probe requires CUDA, at least two training rows, and positive epochs and LR")
     settings = json.loads((reference / "settings.json").read_text())
     prep = json.loads((reference / "preprocessing.json").read_text())
     pred = pd.read_parquet(reference / "predictions.parquet")
+    if bool(settings.get("shared_validation_keys")) != (shared_train is not None):
+        raise ValueError("Shared validation runs require --shared-train")
+    if shared_train is None and train_rows is None:
+        train_rows = 2000
     if (settings["model"] != MODEL_ID or settings["target"] != "vol_h1"
             or settings["question"] != QUESTION or settings["legend"] != LEGEND):
         raise ValueError("Probe reference must use the same model, target and prompts")
@@ -141,8 +226,13 @@ def run_probe(prepared, bundle, output_root, reference, train_rows=2000, epochs=
         if not np.isfinite(pred[f"{style}_prob_yes"]).all():
             raise ValueError(f"Incomplete zero-shot predictions for {style}")
 
-    output = output_root / datetime.now(timezone.utc).strftime("qwen_probe_%Y%m%d_%H%M%S_%f")
-    output.mkdir(parents=True)
+    output = run_directory(output_root, run_id, "qwen_probe")
+    repo = Path(__file__).resolve().parents[2]
+    commit = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    signature = dict(mode="probe", commit=commit, reference=str(reference.resolve()),
+                     reference_hash=sha256(reference / "predictions.parquet"), train_rows=train_rows,
+                     shared_train_hash=sha256(shared_train) if shared_train else None, epochs=epochs, lr=lr)
+    check_signature(output, signature)
     processor = AutoProcessor.from_pretrained(MODEL_ID, revision=revision, use_fast=True)
     if (type(processor.image_processor).__name__ != settings["image_processor_class"]
             or transformers.__version__ != settings["transformers"]):
@@ -150,12 +240,16 @@ def run_probe(prepared, bundle, output_root, reference, train_rows=2000, epochs=
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         MODEL_ID, revision=revision, dtype=torch.bfloat16, attn_implementation="sdpa",
     ).to("cuda").eval().requires_grad_(False)
-    data = build_inputs(prepared, pred, settings, prep, train_rows)
+    data = (build_shared_inputs(prepared, pred, settings, prep, shared_train, train_rows)
+            if shared_train is not None else build_inputs(prepared, pred, settings, prep, train_rows))
     train, valid = (data[split][0] for split in ("train", "validation"))
-    repo = Path(__file__).resolve().parents[2]
+    for split, (rows, _, _) in data.items():
+        rows[KEYS + ["label"]].to_parquet(output / f"{split}_keys.parquet", index=False)
     (output / "settings.json").write_text(json.dumps({
         **settings, "mode": "probe", "zero_shot_reference": str(reference.resolve()),
-        "code_commit": subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip(),
+        "code_commit": commit,
+        "shared_train_keys": str(shared_train.resolve()) if shared_train else None,
+        "shared_train_keys_sha256": signature["shared_train_hash"],
         "gpu": torch.cuda.get_device_name(0), "torch": torch.__version__,
         "train_rows_requested": train_rows, "train_rows": len(train), "epochs": epochs,
         "learning_rate": lr, "probe_batch_size": 64, "train_eval_rows": min(512, len(train)),
@@ -170,8 +264,8 @@ def run_probe(prepared, bundle, output_root, reference, train_rows=2000, epochs=
     valid_y = torch.tensor(valid.label.tolist(), dtype=torch.float32)
     for style in LEGEND:
         folder = output / style
-        folder.mkdir()
-        vectors = [embed(model, processor, style, data[split], split, folder / f"{split}_embeddings.pt")
+        folder.mkdir(exist_ok=True)
+        vectors = [embed(model, processor, style, data[split], split, folder, shared_train is not None)
                    for split in ("train", "validation")]
         logits, n_head, val_loss = fit_probe(
             vectors[0], train_y, vectors[1], valid_y, folder, settings["seed"], epochs, lr,
@@ -180,12 +274,17 @@ def run_probe(prepared, bundle, output_root, reference, train_rows=2000, epochs=
         zero = pred[f"{style}_prob_yes"]
         pred[f"{style}_probe_logit"] = logits.numpy()
         pred[f"{style}_probe_probability"] = p
-        summaries.append(dict(
+        metrics = dict(
             input_style=style, validation_rows=len(valid), auc=roc_auc_score(valid_y, logits),
             log_loss=val_loss, brier=brier_score_loss(valid_y, p),
             zero_shot_auc=roc_auc_score(valid_y, zero),
             zero_shot_log_loss=log_loss(valid_y, zero), zero_shot_brier=brier_score_loss(valid_y, zero),
-        ))
+        )
+        if shared_train is not None:
+            cnn = pred[f"{style}_cnn_probability"]
+            metrics.update(cnn_auc=roc_auc_score(valid_y, cnn), cnn_log_loss=log_loss(valid_y, cnn),
+                           cnn_brier=brier_score_loss(valid_y, cnn))
+        summaries.append(metrics)
         parameters.append(dict(input_style=style, frozen_qwen=count, total=count + n_head, trainable=n_head))
     pred.to_parquet(output / "predictions.parquet", index=False)
     pd.DataFrame(parameters).to_csv(output / "network_parameters.csv", index=False)

@@ -156,6 +156,13 @@ def make_prompt(style, features):
     return prompt + "\n" + QUESTION
 
 
+def evaluation_prompt(style, features, shared=False):
+    prompt = make_prompt(style, features)
+    if shared and style == "6b":
+        prompt = prompt.replace("Historical features:", "Standardized historical features:")
+    return prompt
+
+
 @torch.inference_mode()
 def score(model, processor, image, prompt, ids):
     batch = model_inputs(processor, image, prompt, model.device)
@@ -235,9 +242,7 @@ def run(prepared, bundle, output_root, n_rows=32, scale_rows=2000, seed=69, revi
         torch.cuda.reset_peak_memory_stats()
         scores = []
         for i in range(len(rows)):
-            prompt = make_prompt(style, numbers.iloc[i])
-            if shared_keys is not None and style == "6b":
-                prompt = prompt.replace("Historical features:", "Standardized historical features:")
+            prompt = evaluation_prompt(style, numbers.iloc[i], shared=shared_keys is not None)
             image = Image.fromarray(chart.image(i)).convert("RGB")
             yes, no, prob, grid = score(model, processor, image, prompt, ids)
             scores.append((yes, no, prob, *grid))
@@ -292,7 +297,9 @@ def main():
     reference.add_argument("--lora-reference", type=Path, help="Completed frozen-probe run directory")
     reference.add_argument("--shared-validation", type=Path, help="Shared validation keys Parquet")
     parser.add_argument("--cnn-references", type=Path, help="Directory containing the original 6b and 6d runs")
-    parser.add_argument("--train-rows", type=int, default=2000)
+    parser.add_argument("--train-rows", type=int, help="Optional probe training cap (pilot default: 2000)")
+    parser.add_argument("--shared-train", type=Path, help="Canonical training keys for shared probe")
+    parser.add_argument("--run-id", help="Stable directory name for restarting probe or LoRA")
     parser.add_argument("--lora-style", choices=("6b", "6d"), default="6d")
     parser.add_argument("--lora-epochs", type=int, default=3)
     parser.add_argument("--lora-max-train", type=int, help="Limit training rows for a smoke test")
@@ -300,10 +307,11 @@ def main():
     if args.lora_reference:
         from qwen_lora import run_lora
         run_lora(args.prepared, args.bundle, args.output, args.lora_reference,
-                 args.lora_style, args.lora_epochs, args.lora_max_train)
+                 args.lora_style, args.lora_epochs, args.lora_max_train, run_id=args.run_id)
     elif args.probe_reference:
         from qwen_probe import run_probe
-        run_probe(args.prepared, args.bundle, args.output, args.probe_reference, args.train_rows)
+        run_probe(args.prepared, args.bundle, args.output, args.probe_reference, args.train_rows,
+                  shared_train=args.shared_train, run_id=args.run_id)
     else:
         run(args.prepared, args.bundle, args.output, args.rows, args.scale_rows, revision=args.revision,
             shared_keys=args.shared_validation, references=args.cnn_references)

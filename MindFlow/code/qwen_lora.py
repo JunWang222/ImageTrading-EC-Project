@@ -3,7 +3,6 @@
 import json
 import subprocess
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -13,22 +12,22 @@ from PIL import Image
 from sklearn.metrics import brier_score_loss, log_loss, roc_auc_score
 from torch.nn import functional as F
 
-from qwen_eval import LEGEND, MODEL_ID, QUESTION, answer_ids, make_prompt, model_inputs, sha256
-from qwen_probe import KEYS, build_inputs
+from qwen_eval import LEGEND, MODEL_ID, QUESTION, answer_ids, evaluation_prompt, model_inputs, sha256
+from qwen_probe import KEYS, atomic_save, build_inputs, build_shared_inputs, check_signature, run_directory
 
 
-def example_logit(model, processor, style, data, index, ids):
+def example_logit(model, processor, style, data, index, ids, shared):
     _, numbers, charts = data
     image = Image.fromarray(charts[style].image(index)).convert("RGB")
-    batch = model_inputs(processor, image, make_prompt(style, numbers.iloc[index]), model.device)
+    batch = model_inputs(processor, image, evaluation_prompt(style, numbers.iloc[index], shared), model.device)
     scores = model(**batch, use_cache=False, logits_to_keep=1).logits[0, -1, ids].float()
     return scores[0] - scores[1]
 
 
 @torch.no_grad()
-def evaluate(model, processor, style, data, indices, ids):
+def evaluate(model, processor, style, data, indices, ids, shared):
     model.eval()
-    logits = torch.stack([example_logit(model, processor, style, data, i, ids) for i in indices])
+    logits = torch.stack([example_logit(model, processor, style, data, i, ids, shared) for i in indices])
     labels = torch.tensor(data[0].label.iloc[indices].tolist(), device=logits.device, dtype=torch.float32)
     loss = F.binary_cross_entropy_with_logits(logits, labels).item()
     return loss, logits.cpu()
@@ -36,15 +35,22 @@ def evaluate(model, processor, style, data, indices, ids):
 
 def verify_rows(data, probe, style):
     for split, (rows, _, _) in data.items():
+        keys_file = probe / f"{split}_keys.parquet"
+        if keys_file.is_file():
+            pd.testing.assert_frame_equal(
+                rows[KEYS + ["label"]].reset_index(drop=True), pd.read_parquet(keys_file),
+                check_dtype=False, obj=f"{style} {split} probe rows",
+            )
+            continue
         cache = torch.load(probe / style / f"{split}_embeddings.pt", map_location="cpu", weights_only=True)
         if rows[KEYS].to_numpy().tolist() != cache["keys"] or rows.label.tolist() != cache["labels"]:
             raise ValueError(f"{style} {split} keys or labels differ from the frozen probe")
 
 
-def run_lora(prepared, bundle, output_root, probe, style="6d", epochs=3, max_train=None):
+def run_lora(prepared, bundle, output_root, probe, style="6d", epochs=3, max_train=None, run_id=None):
     import peft
     import transformers
-    from peft import LoraConfig, get_peft_model
+    from peft import LoraConfig, get_peft_model, get_peft_model_state_dict, set_peft_model_state_dict
     from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
     if not torch.cuda.is_available() or epochs < 1 or (max_train is not None and max_train < 2):
@@ -78,7 +84,14 @@ def run_lora(prepared, bundle, output_root, probe, style="6d", epochs=3, max_tra
     model = get_peft_model(base, LoraConfig(
         r=8, lora_alpha=16, lora_dropout=0.05, target_modules=targets, bias="none",
     ))
-    data = build_inputs(prepared, pred, settings, prep, settings["train_rows_requested"])
+    shared_train = settings.get("shared_train_keys")
+    if shared_train:
+        shared_train = Path(shared_train)
+        if sha256(shared_train) != settings["shared_train_keys_sha256"]:
+            raise ValueError("Shared train keys differ from the probe run")
+        data = build_shared_inputs(prepared, pred, settings, prep, shared_train, settings["train_rows_requested"])
+    else:
+        data = build_inputs(prepared, pred, settings, prep, settings["train_rows_requested"])
     verify_rows(data, probe, style)
     train, valid = data["train"][0], data["validation"][0]
     train_indices = np.arange(min(max_train or len(train), len(train)))
@@ -86,19 +99,23 @@ def run_lora(prepared, bundle, output_root, probe, style="6d", epochs=3, max_tra
     validation = np.arange(len(valid))
     labels = valid.label.to_numpy()
 
-    output = output_root / datetime.now(timezone.utc).strftime("qwen_lora_%Y%m%d_%H%M%S_%f")
-    output.mkdir(parents=True)
+    output = run_directory(output_root, run_id, "qwen_lora")
     repo = Path(__file__).resolve().parents[2]
+    commit = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    check_signature(output, dict(mode="lora", commit=commit, probe=str(probe.resolve()), style=style,
+                                 probe_hash=sha256(probe / "predictions.parquet"),
+                                 epochs=epochs, max_train=max_train, peft=peft.__version__))
     lr, accumulation, decay = 2e-5, 16, 0.01
     (output / "settings.json").write_text(json.dumps({
         **settings, "mode": "lora", "input_style": style, "probe_reference": str(probe.resolve()),
-        "code_commit": subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip(),
+        "code_commit": commit,
         "code_dirty": bool(subprocess.check_output(["git", "-C", str(repo), "status", "--porcelain"], text=True).strip()),
         "gpu": torch.cuda.get_device_name(0), "torch": torch.__version__, "peft": peft.__version__,
         "epochs": epochs, "train_rows": len(train_indices), "train_rows_requested": max_train,
         "learning_rate": lr, "batch_size": 1, "gradient_accumulation": accumulation,
         "train_eval_rows": len(fixed_train), "optimizer": "AdamW", "weight_decay": decay,
         "lora_rank": 8, "lora_alpha": 16, "lora_dropout": 0.05, "lora_targets": targets,
+        "checkpoint_interval_optimizer_steps": 8,
         "embedding": None,
     }, indent=2) + "\n")
     (output / "preprocessing.json").write_text(json.dumps(prep, indent=2) + "\n")
@@ -111,39 +128,54 @@ def run_lora(prepared, bundle, output_root, probe, style="6d", epochs=3, max_tra
     )
     optimizer = torch.optim.AdamW(parameters, lr=lr, weight_decay=decay)
     train_y = torch.tensor(train.label.tolist(), device=model.device, dtype=torch.float32)
-    history, best = [], float("inf")
+    history, best, first_epoch, resume_offset, cumulative = [], float("inf"), 1, 0, 0.0
+    checkpoint = output / "last.pt"
+    if checkpoint.exists():
+        state = torch.load(checkpoint, map_location="cpu", weights_only=True)
+        set_peft_model_state_dict(model, state["adapter"])
+        optimizer.load_state_dict(state["optimizer"])
+        torch.set_rng_state(state["torch_rng"])
+        torch.cuda.set_rng_state(state["cuda_rng"])
+        first_epoch, resume_offset, cumulative = state["epoch"], state["offset"], state["cumulative"]
+        history, best = state["history"], state["best"]
+        print(f"Resuming epoch {first_epoch}, after {resume_offset:,} rows", flush=True)
+    table = pd.read_csv(output / "summary.csv") if (output / "summary.csv").exists() else None
+
+    def save_progress(epoch, offset, loss):
+        atomic_save(dict(adapter=get_peft_model_state_dict(model), optimizer=optimizer.state_dict(),
+                         epoch=epoch, offset=offset, cumulative=loss, history=history, best=best,
+                         torch_rng=torch.get_rng_state(), cuda_rng=torch.cuda.get_rng_state()), checkpoint)
+
     print(f"Saving {style} LoRA results to {output}", flush=True)
-    for epoch in range(1, epochs + 1):
+    for epoch in range(first_epoch, epochs + 1):
         start = time.perf_counter()
         model.train()
-        cumulative = 0.0
-        order = rng.permutation(train_indices)
-        for offset in range(0, len(order), accumulation):
+        order = np.random.default_rng(seed + epoch).permutation(train_indices)
+        for offset in range(resume_offset, len(order), accumulation):
             group = order[offset:offset + accumulation]
             optimizer.zero_grad(set_to_none=True)
             for i in group:
-                logit = example_logit(model, processor, style, data["train"], i, ids)
+                logit = example_logit(model, processor, style, data["train"], i, ids, bool(shared_train))
                 loss = F.binary_cross_entropy_with_logits(logit, train_y[i])
                 (loss / len(group)).backward()
                 cumulative += loss.detach().item()
             torch.nn.utils.clip_grad_norm_(parameters, 1.0)
             optimizer.step()
             seen = offset + len(group)
+            if seen % (8 * accumulation) == 0 or seen == len(order):
+                save_progress(epoch, seen, cumulative)
             if offset % (8 * accumulation) == 0 or seen == len(order):
                 print(f"Epoch {epoch}: {seen}/{len(order)} train rows, loss={cumulative / seen:.4f}", flush=True)
-        train_eval, _ = evaluate(model, processor, style, data["train"], fixed_train, ids)
-        val_loss, logits = evaluate(model, processor, style, data["validation"], validation, ids)
+        train_eval, _ = evaluate(model, processor, style, data["train"], fixed_train, ids, bool(shared_train))
+        val_loss, logits = evaluate(model, processor, style, data["validation"], validation, ids, bool(shared_train))
         if not torch.isfinite(logits).all() or not np.isfinite(train_eval):
             raise RuntimeError(f"Non-finite loss or logits at epoch {epoch}")
-        auc = roc_auc_score(labels, logits)
+        auc = float(roc_auc_score(labels, logits))
         history.append(dict(epoch=epoch, train_loss=cumulative / len(order), train_eval_loss=train_eval,
                             val_log_loss=val_loss, val_auc=auc, learning_rate=lr,
                             seconds=time.perf_counter() - start))
         pd.DataFrame(history).to_csv(output / "history.csv", index=False)
         model.save_pretrained(output / "last_adapter")
-        torch.save(dict(epoch=epoch, optimizer=optimizer.state_dict(), rng=rng.bit_generator.state,
-                        torch_rng=torch.get_rng_state(), cuda_rng=torch.cuda.get_rng_state()),
-                   output / "last.pt")
         if val_loss < best:
             best = val_loss
             model.save_pretrained(output / "best_adapter")
@@ -156,6 +188,7 @@ def run_lora(prepared, bundle, output_root, probe, style="6d", epochs=3, max_tra
                 ("zero_shot", pred[f"{style}_prob_yes"]),
                 ("probe", pred[f"{style}_probe_probability"]),
                 ("lora", probability),
+                *([("cnn", pred[f"{style}_cnn_probability"])] if shared_train else []),
             ):
                 result.append(dict(input_style=style, mode=method, rows=len(pred),
                                    auc=roc_auc_score(labels, scores),
@@ -164,6 +197,8 @@ def run_lora(prepared, bundle, output_root, probe, style="6d", epochs=3, max_tra
                                    best_epoch=epoch if method == "lora" else None))
             table = pd.DataFrame(result)
             table.to_csv(output / "summary.csv", index=False)
+        save_progress(epoch + 1, 0, 0.0)
+        resume_offset, cumulative = 0, 0.0
         print(f"Epoch {epoch}: train eval loss={train_eval:.4f}, val loss={val_loss:.4f}, val AUC={auc:.4f}")
     (output / "takeaways.md").write_text(
         "# Qwen LoRA validation pilot\n\n"
