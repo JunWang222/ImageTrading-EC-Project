@@ -202,10 +202,19 @@ def main():
     parser.add_argument("--rows", type=int, default=32)
     parser.add_argument("--scale-rows", type=int, default=2000)
     parser.add_argument("--revision", default="main")
-    parser.add_argument("--probe-reference", type=Path, help="Completed zero-shot run directory")
+    reference = parser.add_mutually_exclusive_group()
+    reference.add_argument("--probe-reference", type=Path, help="Completed zero-shot run directory")
+    reference.add_argument("--lora-reference", type=Path, help="Completed frozen-probe run directory")
     parser.add_argument("--train-rows", type=int, default=2000)
+    parser.add_argument("--lora-style", choices=("6b", "6d"), default="6d")
+    parser.add_argument("--lora-epochs", type=int, default=3)
+    parser.add_argument("--lora-max-train", type=int, help="Limit training rows for a smoke test")
     args = parser.parse_args()
-    if args.probe_reference:
+    if args.lora_reference:
+        from qwen_lora import run_lora
+        run_lora(args.prepared, args.bundle, args.output, args.lora_reference,
+                 args.lora_style, args.lora_epochs, args.lora_max_train)
+    elif args.probe_reference:
         from qwen_probe import run_probe
         run_probe(args.prepared, args.bundle, args.output, args.probe_reference, args.train_rows)
     else:
